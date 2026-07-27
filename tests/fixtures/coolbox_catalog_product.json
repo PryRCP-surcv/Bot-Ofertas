@@ -1,0 +1,142 @@
+[
+  {
+    "productId": "1000",
+    "productName": "Audífonos Demo",
+    "productTitle": "Audífonos Demo",
+    "productReference": "DEMO-1000",
+    "brand": "Marca Demo",
+    "Modelo": ["MD-1000"],
+    "categories": [
+      "/Tecnología/Audio/Audífonos/",
+      "/Tecnología/Audio/",
+      "/Tecnología/"
+    ],
+    "items": [
+      {
+        "itemId": "sku-negro",
+        "name": "Audífonos Demo Negro",
+        "nameComplete": "Audífonos Demo Negro",
+        "referenceId": {
+          "Key": "RefId",
+          "Value": "DEMO-1000-NEGRO"
+        },
+        "variations": [
+          "Color"
+        ],
+        "Color": [
+          "Negro"
+        ],
+        "sellers": [
+          {
+            "sellerId": "1",
+            "sellerName": "Rash Peru S.R.L",
+            "sellerDefault": true,
+            "commertialOffer": {
+              "Price": 199.9,
+              "ListPrice": 249.9,
+              "AvailableQuantity": 8,
+              "IsAvailable": true,
+              "Installments": [
+                {
+                  "Value": 49.975,
+                  "NumberOfInstallments": 4,
+                  "InterestRate": 0,
+                  "TotalValuePlusInterestRate": 199.9,
+                  "PaymentSystemName": "Visa"
+                }
+              ]
+            }
+          },
+          {
+            "sellerId": "market-7",
+            "sellerName": "Tienda Marketplace",
+            "sellerDefault": false,
+            "commertialOffer": {
+              "Price": 189.9,
+              "ListPrice": 219.9,
+              "AvailableQuantity": 2,
+              "IsAvailable": true,
+              "Installments": []
+            }
+          }
+        ]
+      },
+      {
+        "itemId": "sku-azul",
+        "name": "Audífonos Demo Azul",
+        "nameComplete": "Audífonos Demo Azul",
+        "referenceId": {
+          "Key": "RefId",
+          "Value": "DEMO-1000-AZUL"
+        },
+        "variations": [
+          "Color"
+        ],
+        "Color": [
+          "Azul"
+        ],
+        "sellers": [
+          {
+            "sellerId": "1",
+            "sellerName": "Rash Peru S.R.L",
+            "sellerDefault": true,
+            "commertialOffer": {
+              "Price": 999987600,
+              "ListPrice": 0,
+              "AvailableQuantity": 0,
+              "IsAvailable": false,
+              "Installments": [
+                {
+                  "Value": 10,
+                  "NumberOfInstallments": 12,
+                  "InterestRate": 0
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "productId": "2000",
+    "productName": "Laptop Demo Open Box",
+    "productTitle": "Laptop Demo Open Box",
+    "productReference": "DEMO-2000",
+    "brand": "Marca Demo",
+    "Modelo": [
+      "LAP-2000"
+    ],
+    "categories": [
+      "/Tecnología/Computación/Laptops/"
+    ],
+    "items": [
+      {
+        "itemId": "sku-open-box",
+        "name": "Laptop Demo Open Box",
+        "nameComplete": "Laptop Demo Open Box",
+        "referenceId": [
+          {
+            "Key": "RefId",
+            "Value": "DEMO-2000-OB"
+          }
+        ],
+        "variations": [],
+        "sellers": [
+          {
+            "sellerId": "1",
+            "sellerName": "Rash Peru S.R.L",
+            "sellerDefault": true,
+            "commertialOffer": {
+              "Price": 2599,
+              "ListPrice": 3199,
+              "AvailableQuantity": 99999,
+              "IsAvailable": true,
+              "Installments": []
+            }
+          }
+        ]
+      }
+    ]
+  }
+]
