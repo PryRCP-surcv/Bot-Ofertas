@@ -676,9 +676,20 @@ def _history(limit: int) -> int:
         print(f"  Precio: {price} | Precio de lista: {list_price}")
         print(
             f"  Tienda: {observation.store_slug} | "
-            f"SKU: {observation.sku} | Vendedor: {observation.seller_name}"
+            f"SKU: {observation.sku} | "
+            f"Vendedor: {observation.seller_name} ({observation.seller_id})"
         )
-        print(f"  Disponibilidad: {availability}")
+        print(
+            f"  Disponibilidad: {availability} | "
+            f"Condición: {observation.condition.value} | "
+            f"Marketplace: {'sí' if observation.is_marketplace else 'no'}"
+        )
+        if observation.variant:
+            print(f"  Variante: {_format_variant(observation.variant)}")
+        if observation.installments:
+            print(f"  Cuotas registradas: {len(observation.installments)}")
+        if observation.quality_flags:
+            print(f"  Flags de calidad: {', '.join(observation.quality_flags)}")
         print(f"  URL: {observation.source_url}")
     return 0
 
@@ -812,6 +823,17 @@ def _list_alerts(limit: int, *, include_all: bool = False) -> int:
             print(f"  Motivos: {', '.join(detection.reasons)}")
         if detection.rejection_reasons:
             print(f"  Descartes: {', '.join(detection.rejection_reasons)}")
+        print(
+            f"  Vendedor: {observation.seller_name} ({observation.seller_id}) | "
+            f"Condición: {observation.condition.value} | "
+            f"Marketplace: {'sí' if observation.is_marketplace else 'no'}"
+        )
+        if observation.variant:
+            print(f"  Variante: {_format_variant(observation.variant)}")
+        if observation.installments:
+            print(f"  Cuotas registradas: {len(observation.installments)}")
+        if observation.quality_flags:
+            print(f"  Flags de calidad: {', '.join(observation.quality_flags)}")
         print(f"  URL: {observation.source_url}")
     return 0
 
@@ -912,6 +934,10 @@ def _format_price(currency: str, value: object | None) -> str:
     if value is None:
         return "no disponible"
     return f"{currency} {value}"
+
+
+def _format_variant(variant: dict[str, str]) -> str:
+    return ", ".join(f"{key}={value}" for key, value in sorted(variant.items()))
 
 
 def _dispatch(args: argparse.Namespace) -> int:

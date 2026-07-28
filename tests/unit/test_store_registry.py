@@ -79,7 +79,22 @@ def test_builtin_registry_detects_and_normalizes_coolbox_urls() -> None:
 
     assert adapter.slug == "coolbox"
     assert canonical_url == "https://www.coolbox.pe/barra-sonido/p"
-    assert registry.enabled_store_slugs == frozenset({"coolbox"})
+    assert registry.enabled_store_slugs == frozenset({"coolbox", "oechsle", "promart"})
+
+    oechsle, oechsle_url = registry.resolve(
+        "https://oechsle.pe/producto-demo/p?utm_source=test"
+    )
+    assert oechsle_url == "https://www.oechsle.pe/producto-demo/p"
+    assert oechsle.policy.minimum_interval_minutes == 60
+    assert oechsle.policy.max_targets_per_run == 5
+
+    promart, promart_url = registry.resolve(
+        "https://promart.pe/producto-demo/p?utm_source=test"
+    )
+    assert promart_url == "https://www.promart.pe/producto-demo/p"
+    assert promart.policy.enabled is True
+    assert promart.policy.minimum_interval_minutes == 60
+    assert promart.policy.max_targets_per_run == 5
 
 
 def test_registry_resolves_registered_hosts_without_guessing() -> None:

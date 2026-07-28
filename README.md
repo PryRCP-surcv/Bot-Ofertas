@@ -1,13 +1,12 @@
 # Bot de ofertas
 
 Monitor responsable de precios públicos para tiendas online de Perú. El objetivo
-es conservar historial por SKU, variante y vendedor para detectar posteriormente
+es conservar historial por SKU, variante y vendedor para detectar
 ofertas excepcionales y posibles errores de precio sin realizar compras.
 
 ## Estado actual
 
-La Fase 1 está implementada y probada en ejecución local, y la base multi-tienda
-está lista:
+Las Fases 1 y 2 están implementadas y probadas en ejecución local:
 
 1. Se registra una URL pública de producto.
 2. El registro de tiendas reconoce el dominio, elige el adapter habilitado y
@@ -23,16 +22,21 @@ está lista:
 9. Telegram recibe las ofertas cuando sus credenciales están configuradas.
 10. Un scheduler local ejecuta el ciclo completo sin solapar corridas.
 
-La primera prueba controlada guardó correctamente una barra de sonido a
+La primera prueba de la Fase 1 guardó correctamente una barra de sonido a
 `PEN 179.00`, con precio de lista `PEN 499.00`, disponibilidad y vendedor.
+La validación viva de la Fase 2 guardó después una observación de Oechsle y otra
+de Promart, sin errores.
 
-Coolbox es la única tienda habilitada hoy. La arquitectura ya permite incorporar
-otras tiendas sin acoplar la CLI, el pipeline ni el esquema de historial a
-Coolbox.
+Coolbox, Oechsle y Promart están habilitadas. Oechsle opera como piloto de
+alertas y Promart como piloto de historial: sus alertas quedan bloqueadas hasta
+modelar una ubicación verificable. Ambas se limitan a fichas agregadas
+manualmente, un mínimo de 60 minutos y un máximo de 5 URLs por tienda y corrida.
+Comparten un parser VTEX reutilizable, pero conservan política, dominios,
+vendedores, fixtures y pruebas propios.
 
 El detector, la deduplicación, Telegram y el scheduler ya están implementados.
-La siguiente fase incorporará más tiendas. Aún no existen dashboard web,
-WhatsApp, Gmail ni despliegue permanente en un servidor.
+La siguiente fase mejorará la precisión y la confirmación de candidatos. Aún no
+existen dashboard web, WhatsApp, Gmail ni despliegue permanente en un servidor.
 
 Telegram es actualmente un canal de salida: envía alertas, pero todavía no
 responde `/start`, `/ofertas`, `Hola` ni otros comandos. El monitoreo continuo
@@ -236,6 +240,8 @@ su estado, pero su precio centinela se descarta. Los vendedores marketplace nunc
 se mezclan con el vendedor propio.
 
 Para integrar otra tienda, consulta [Cómo añadir una tienda](docs/adding-a-store.md).
+La operación y límites actuales están en
+[Operación de la Fase 2](docs/phase2-operations.md).
 
 ## Límites y política
 
@@ -248,9 +254,11 @@ Para integrar otra tienda, consulta [Cómo añadir una tienda](docs/adding-a-sto
 - Circuito persistente por tienda y backoff por producto después de fallos.
 - `User-Agent` propio y configurable.
 
-Coolbox es la única tienda habilitada por ahora. Oechsle es candidata para la
-segunda integración. Hiraoka y Ripley permanecen deshabilitadas por sus
-restricciones actuales. Consulta [la política de fuentes](docs/source-policy.md).
+Coolbox, Oechsle y Promart son los tres pilotos habilitados; Promart construye
+historial, pero no alerta mientras su ubicación sea desconocida. plazaVea queda
+diferida por precios por peso, ubicación y vendedores; Hiraoka, Ripley, Tai Loy
+y Memory Kings no se integran bajo las condiciones revisadas. Consulta
+[la política de fuentes](docs/source-policy.md).
 
 La detección automática no significa scraping universal. Solo reconoce dominios
 de adapters registrados. Cada dominio nuevo necesita revisión de `robots.txt`,
@@ -278,7 +286,7 @@ mostrarse en capturas.
 
 ## Siguientes hitos
 
-La Fase 2 agregará tiendas peruanas una por una mediante adapters revisados,
-fixtures y pruebas. Después se mejorarán la confirmación de candidatos, la
-comparación entre tiendas y el panel de administración. WhatsApp y correo serán
-canales adicionales sobre el mismo contrato de notificaciones.
+La Fase 3 mejorará medianas de 7, 30 y 90 días, puntuación de confianza,
+comparación de equivalentes y segunda comprobación antes de alertar. Después
+vendrán la API y el panel de administración. WhatsApp y correo serán canales
+adicionales sobre el mismo contrato de notificaciones.

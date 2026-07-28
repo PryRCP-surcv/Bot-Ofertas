@@ -1,0 +1,149 @@
+[
+  {
+    "productId": "3000",
+    "productName": "Producto Demo",
+    "productTitle": "Producto Demo",
+    "productReference": "DEMO-3000",
+    "linkText": "producto-demo-3000",
+    "brand": "Marca Demo",
+    "Modelo": [
+      "MD-3000"
+    ],
+    "categories": [
+      "/Hogar/Organizacion/Accesorios/",
+      "/Hogar/Organizacion/",
+      "/Hogar/"
+    ],
+    "items": [
+      {
+        "itemId": "sku-negro",
+        "name": "Producto Demo Negro",
+        "nameComplete": "Producto Demo Negro",
+        "referenceId": {
+          "Key": "RefId",
+          "Value": "DEMO-3000-NEGRO"
+        },
+        "variations": [
+          "Color"
+        ],
+        "Color": [
+          "Negro"
+        ],
+        "sellers": [
+          {
+            "sellerId": "market-20",
+            "sellerName": "Vendedor Marketplace",
+            "sellerDefault": false,
+            "commertialOffer": {
+              "Price": 79.9,
+              "ListPrice": 99.9,
+              "AvailableQuantity": 4,
+              "IsAvailable": true,
+              "Installments": []
+            }
+          },
+          {
+            "sellerId": "1",
+            "sellerName": "oechsle",
+            "sellerDefault": true,
+            "commertialOffer": {
+              "Price": 999999,
+              "ListPrice": 999999,
+              "AvailableQuantity": 0,
+              "IsAvailable": false,
+              "Installments": [
+                {
+                  "Value": 10,
+                  "NumberOfInstallments": 6,
+                  "InterestRate": 0,
+                  "PaymentSystemName": "Visa"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "itemId": "sku-blanco",
+        "name": "Producto Demo Blanco",
+        "nameComplete": "Producto Demo Blanco",
+        "referenceId": [
+          {
+            "Key": "RefId",
+            "Value": "DEMO-3000-BLANCO"
+          }
+        ],
+        "variations": [
+          "Color"
+        ],
+        "Color": [
+          "Blanco"
+        ],
+        "sellers": [
+          {
+            "sellerId": "1",
+            "sellerName": "Oechsle",
+            "sellerDefault": true,
+            "commertialOffer": {
+              "Price": 149,
+              "ListPrice": 199,
+              "AvailableQuantity": 7,
+              "IsAvailable": true,
+              "PromotionTeasers": [
+                {
+                  "name": "Precio con Tarjeta Oh",
+                  "conditions": {
+                    "parameters": [
+                      {
+                        "name": "PaymentSystem",
+                        "value": "Tarjeta Oh"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "Installments": [
+                {
+                  "Value": 24.833333,
+                  "NumberOfInstallments": 6,
+                  "InterestRate": 0,
+                  "TotalValuePlusInterestRate": 149,
+                  "PaymentSystemName": "Tarjeta Oh"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "itemId": "sku-gris",
+        "name": "Producto Demo Gris",
+        "nameComplete": "Producto Demo Gris",
+        "referenceId": {
+          "Key": "RefId",
+          "Value": "DEMO-3000-GRIS"
+        },
+        "variations": [
+          "Color"
+        ],
+        "Color": [
+          "Gris"
+        ],
+        "sellers": [
+          {
+            "sellerId": "1",
+            "sellerName": "Vendedor no validado",
+            "sellerDefault": true,
+            "commertialOffer": {
+              "Price": 139,
+              "ListPrice": 189,
+              "AvailableQuantity": 3,
+              "IsAvailable": true,
+              "Installments": []
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

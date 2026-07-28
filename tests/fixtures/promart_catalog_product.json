@@ -1,0 +1,165 @@
+[
+  {
+    "productId": "promart-demo-4100",
+    "productName": "Producto Demo Promart",
+    "productTitle": "Producto Demo Promart",
+    "productReference": "PROMART-DEMO-4100",
+    "linkText": "producto-demo-promart",
+    "brand": "Marca Demo",
+    "Modelo": [
+      "PD-4100"
+    ],
+    "categories": [
+      "/Hogar/Organizacion/Accesorios/",
+      "/Hogar/Organizacion/",
+      "/Hogar/"
+    ],
+    "items": [
+      {
+        "itemId": "sku-negro",
+        "name": "Producto Demo Promart Negro",
+        "nameComplete": "Producto Demo Promart Negro",
+        "measurementUnit": "un",
+        "unitMultiplier": 1,
+        "referenceId": {
+          "Key": "RefId",
+          "Value": "PROMART-DEMO-NEGRO"
+        },
+        "variations": [
+          "Color"
+        ],
+        "Color": [
+          "Negro"
+        ],
+        "sellers": [
+          {
+            "sellerId": "1",
+            "sellerName": "Promart",
+            "sellerDefault": true,
+            "commertialOffer": {
+              "Price": 199.9,
+              "ListPrice": 249.9,
+              "AvailableQuantity": 5,
+              "IsAvailable": true,
+              "Installments": [
+                {
+                  "Value": 49.975,
+                  "NumberOfInstallments": 4,
+                  "InterestRate": 0,
+                  "TotalValuePlusInterestRate": 199.9,
+                  "PaymentSystemName": "Visa"
+                }
+              ]
+            }
+          },
+          {
+            "sellerId": "market-7",
+            "sellerName": "Vendedor Marketplace",
+            "sellerDefault": false,
+            "commertialOffer": {
+              "Price": 179.9,
+              "ListPrice": 279.9,
+              "AvailableQuantity": 8,
+              "IsAvailable": true,
+              "CurrencyCode": "PEN",
+              "Installments": []
+            }
+          }
+        ]
+      },
+      {
+        "itemId": "sku-azul",
+        "name": "Producto Demo Promart Azul",
+        "nameComplete": "Producto Demo Promart Azul",
+        "measurementUnit": "un",
+        "unitMultiplier": 1,
+        "referenceId": [
+          {
+            "Key": "RefId",
+            "Value": "PROMART-DEMO-AZUL"
+          }
+        ],
+        "variations": [
+          "Color"
+        ],
+        "Color": [
+          "Azul"
+        ],
+        "sellers": [
+          {
+            "sellerId": "1",
+            "sellerName": "Promart",
+            "sellerDefault": true,
+            "commertialOffer": {
+              "Price": 0,
+              "ListPrice": 0,
+              "AvailableQuantity": 0,
+              "IsAvailable": false,
+              "Installments": [
+                {
+                  "Value": 1,
+                  "NumberOfInstallments": 6,
+                  "InterestRate": 0,
+                  "TotalValuePlusInterestRate": 6,
+                  "PaymentSystemName": "Visa"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "itemId": "sku-blanco",
+        "name": "Producto Demo Promart Blanco",
+        "nameComplete": "Producto Demo Promart Blanco",
+        "measurementUnit": "un",
+        "unitMultiplier": 1,
+        "referenceId": {
+          "Key": "RefId",
+          "Value": "PROMART-DEMO-BLANCO"
+        },
+        "variations": [
+          "Color"
+        ],
+        "Color": [
+          "Blanco"
+        ],
+        "sellers": [
+          {
+            "sellerId": "1",
+            "sellerName": "Promart",
+            "sellerDefault": true,
+            "commertialOffer": {
+              "Price": 149,
+              "ListPrice": 199,
+              "AvailableQuantity": 3,
+              "IsAvailable": true,
+              "PromotionTeasers": [
+                {
+                  "name": "Precio especial con Tarjeta Oh",
+                  "conditions": {
+                    "parameters": [
+                      {
+                        "name": "PaymentSystem",
+                        "value": "Tarjeta Oh"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "Installments": [
+                {
+                  "Value": 24.833333,
+                  "NumberOfInstallments": 6,
+                  "InterestRate": 0,
+                  "TotalValuePlusInterestRate": 149,
+                  "PaymentSystemName": "Tarjeta Oh"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

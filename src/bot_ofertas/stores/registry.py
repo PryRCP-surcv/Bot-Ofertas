@@ -249,8 +249,10 @@ def build_store_registry(*, include_plugins: bool = True) -> StoreRegistry:
     """Build the built-in registry and optionally add installed adapter plugins."""
 
     from bot_ofertas.stores.coolbox import CoolboxAdapter
+    from bot_ofertas.stores.oechsle import OechsleAdapter
+    from bot_ofertas.stores.promart import PromartAdapter
 
-    registry = StoreRegistry([CoolboxAdapter()])
+    registry = StoreRegistry([CoolboxAdapter(), OechsleAdapter(), PromartAdapter()])
     if not include_plugins:
         return registry
 

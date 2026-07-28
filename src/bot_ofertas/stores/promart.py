@@ -1,0 +1,30 @@
+"""Promart pilot integration metadata."""
+
+from __future__ import annotations
+
+from bot_ofertas.crawling.promart import PROMART_HOSTS, normalize_promart_product_url
+from bot_ofertas.crawling.spiders.promart_product import PromartProductSpider
+from bot_ofertas.stores.base import StoreAdapter, StorePolicy
+
+
+class PromartAdapter(StoreAdapter):
+    slug = "promart"
+    display_name = "Promart"
+    hosts = PROMART_HOSTS
+    policy = StorePolicy(
+        enabled=True,
+        minimum_interval_minutes=60,
+        max_targets_per_run=5,
+        requires_explicit_product_url=True,
+        notes=(
+            "Historial piloto de unidad fija; alertas bloqueadas hasta modelar "
+            "ubicacion."
+        ),
+    )
+    spider_class = PromartProductSpider
+
+    def normalize_product_url(self, url: str) -> str:
+        return normalize_promart_product_url(url)
+
+
+__all__ = ["PromartAdapter"]

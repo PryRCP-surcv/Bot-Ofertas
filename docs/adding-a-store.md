@@ -95,6 +95,16 @@ mantén por dominio su política, dominios permitidos, fixtures y casos límite:
 misma plataforma puede tener configuraciones de catálogo, sellers o precios
 distintas.
 
+En este repositorio `crawling/vtex.py` contiene esa base. Cada tienda aporta un
+`VtexParserConfig` con slug, nombre, versión, canonicalizador, moneda local por
+defecto, reconocimiento estricto del vendedor propio y una función de flags de
+calidad. La moneda por defecto solo se aplica cuando el catálogo omite el campo:
+una moneda explícita de tres letras se conserva para que el detector pueda
+rechazarla si no es PEN, y un código explícito inválido genera
+`invalid_currency_code`. Las reglas de ubicación, unidad de venta, promociones
+condicionadas o identidad ambigua permanecen en el wrapper de la tienda y deben
+producir flags bloqueantes cuando no puedan verificarse.
+
 ## 3. Registrar la integración
 
 Un adapter que forma parte de este repositorio se agrega a la colección de
