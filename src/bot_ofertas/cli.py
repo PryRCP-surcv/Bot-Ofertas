@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,6 +22,15 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from bot_ofertas.crawling import settings as crawling_settings
+from bot_ofertas.detection import canonicalize_variant
+from bot_ofertas.notifications import TelegramNotifier
+from bot_ofertas.runtime_config import RuntimeSettings
+from bot_ofertas.scheduling import LocalScheduler
+from bot_ofertas.services import (
+    DetectionBatchSummary,
+    DetectionService,
+    NotificationDispatcher,
+)
 from bot_ofertas.storage.config import DatabaseSettings
 from bot_ofertas.storage.database import (
     create_database_engine,
@@ -28,6 +38,7 @@ from bot_ofertas.storage.database import (
     session_scope,
 )
 from bot_ofertas.storage.models import (
+    DealDetection,
     PriceObservationRecord,
     StoreCrawlState,
     TrackedProduct,
@@ -45,6 +56,10 @@ _DEFAULT_CRAWL_LIMIT = 20
 _MAX_CRAWL_LIMIT = 20
 _DEFAULT_HISTORY_LIMIT = 20
 _MAX_HISTORY_LIMIT = 500
+_DEFAULT_ANALYSIS_LIMIT = 100
+_MAX_ANALYSIS_LIMIT = 1_000
+_DEFAULT_NOTIFICATION_LIMIT = 20
+_MAX_NOTIFICATION_LIMIT = 100
 _CRAWL_LEASE_DURATION = timedelta(hours=2)
 
 
@@ -65,6 +80,22 @@ def _integer_between(minimum: int, maximum: int):
         return number
 
     return parse
+
+
+def _variant_pair(value: str) -> tuple[str, str]:
+    key, separator, variant_value = value.partition("=")
+    key = key.strip()
+    variant_value = variant_value.strip()
+    if not separator or not key or not variant_value:
+        raise argparse.ArgumentTypeError("debe usar el formato CLAVE=VALOR")
+    return key, variant_value
+
+
+def _uuid_argument(value: str) -> UUID:
+    try:
+        return UUID(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("debe ser un UUID válido") from exc
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -102,8 +133,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     add_parser.add_argument("url", metavar="URL")
     add_parser.add_argument("--label", required=True, help="Nombre reconocible del producto.")
-    add_parser.add_argument("--brand", help="Marca esperada para validaciones futuras.")
-    add_parser.add_argument("--model", help="Modelo esperado para validaciones futuras.")
+    add_parser.add_argument("--brand", help="Marca esperada para validar la ficha.")
+    add_parser.add_argument("--model", help="Modelo esperado para validar la ficha.")
+    add_parser.add_argument(
+        "--variant",
+        action="append",
+        default=[],
+        type=_variant_pair,
+        metavar="CLAVE=VALOR",
+        help="Variante esperada; puede repetirse, por ejemplo Color=Negro.",
+    )
+    add_parser.add_argument(
+        "--accessory",
+        action="store_true",
+        help="Confirma que el producto buscado sí es un accesorio.",
+    )
     add_parser.add_argument(
         "--interval",
         type=_integer_between(30, 525_600),
@@ -112,6 +156,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Minutos entre consultas (mínimo 30; predeterminado: 60).",
     )
     product_commands.add_parser("list", help="Lista los productos registrados.")
+    for action, help_text in (
+        ("enable", "Activa nuevamente un producto registrado."),
+        ("disable", "Detiene el monitoreo de un producto sin borrar su historial."),
+    ):
+        status_parser = product_commands.add_parser(action, help=help_text)
+        status_parser.add_argument("product_id", type=_uuid_argument, metavar="ID")
 
     crawl_parser = commands.add_parser(
         "crawl",
@@ -141,7 +191,99 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help=f"Número de observaciones (1-{_MAX_HISTORY_LIMIT}).",
     )
+
+    analyze_parser = commands.add_parser(
+        "analyze",
+        help="Analiza observaciones nuevas y registra decisiones auditables.",
+    )
+    analyze_parser.add_argument(
+        "--limit",
+        type=_integer_between(1, _MAX_ANALYSIS_LIMIT),
+        default=_DEFAULT_ANALYSIS_LIMIT,
+        metavar="N",
+        help=f"Máximo de observaciones (1-{_MAX_ANALYSIS_LIMIT}).",
+    )
+
+    notify_parser = commands.add_parser(
+        "notify",
+        help="Entrega por Telegram las alertas pendientes.",
+    )
+    notify_parser.add_argument(
+        "--limit",
+        type=_integer_between(1, _MAX_NOTIFICATION_LIMIT),
+        default=_DEFAULT_NOTIFICATION_LIMIT,
+        metavar="N",
+        help=f"Máximo de alertas (1-{_MAX_NOTIFICATION_LIMIT}).",
+    )
+
+    alert_parser = commands.add_parser(
+        "alert",
+        help="Consulta las ofertas y posibles errores detectados.",
+    )
+    alert_commands = alert_parser.add_subparsers(
+        dest="alert_command",
+        required=True,
+    )
+    alert_list_parser = alert_commands.add_parser(
+        "list",
+        help="Lista las detecciones que calificaron como oferta.",
+    )
+    alert_list_parser.add_argument(
+        "--limit",
+        type=_integer_between(1, _MAX_HISTORY_LIMIT),
+        default=_DEFAULT_HISTORY_LIMIT,
+        metavar="N",
+    )
+    alert_list_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Incluye decisiones sin oferta, descartes y errores aislados.",
+    )
+
+    cycle_parser = commands.add_parser(
+        "cycle",
+        help="Ejecuta un ciclo: rastreo, análisis y notificaciones.",
+    )
+    _add_cycle_arguments(cycle_parser)
+
+    run_parser = commands.add_parser(
+        "run",
+        help="Mantiene el monitor en ejecución con ciclos periódicos.",
+    )
+    _add_cycle_arguments(run_parser)
+    run_parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Ejecuta un solo ciclo y termina.",
+    )
+    run_parser.add_argument(
+        "--poll-seconds",
+        type=_integer_between(30, 86_400),
+        metavar="SEGUNDOS",
+        help="Frecuencia del scheduler; por defecto usa BOT_SCHEDULER_POLL_SECONDS.",
+    )
     return parser
+
+
+def _add_cycle_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--crawl-limit",
+        type=_integer_between(1, _MAX_CRAWL_LIMIT),
+        default=_DEFAULT_CRAWL_LIMIT,
+        metavar="N",
+    )
+    parser.add_argument(
+        "--analysis-limit",
+        type=_integer_between(1, _MAX_ANALYSIS_LIMIT),
+        default=_DEFAULT_ANALYSIS_LIMIT,
+        metavar="N",
+    )
+    parser.add_argument(
+        "--notification-limit",
+        type=_integer_between(1, _MAX_NOTIFICATION_LIMIT),
+        default=_DEFAULT_NOTIFICATION_LIMIT,
+        metavar="N",
+    )
 
 
 def _database_engine():
@@ -166,6 +308,16 @@ def _add_product(args: argparse.Namespace) -> int:
     label = args.label.strip()
     if not label:
         raise ValueError("--label no puede estar vacío")
+    variant_pairs = list(args.variant)
+    expected_variant: dict[str, str] = {}
+    for key, value in variant_pairs:
+        normalized_pair = canonicalize_variant({key: value})
+        normalized_key, normalized_value = next(iter(normalized_pair.items()))
+        if normalized_key in expected_variant:
+            raise ValueError(
+                "cada clave de --variant debe ser única, incluso en mayúsculas o acentos"
+            )
+        expected_variant[normalized_key] = normalized_value
 
     adapter, canonical_url = resolve_store(args.url)
     if args.interval < adapter.policy.minimum_interval_minutes:
@@ -185,6 +337,8 @@ def _add_product(args: argparse.Namespace) -> int:
                     label=label,
                     expected_brand=args.brand,
                     expected_model=args.model,
+                    expected_variant=expected_variant,
+                    expected_is_accessory=args.accessory,
                     check_interval_minutes=args.interval,
                 )
                 product_id = product.id
@@ -267,7 +421,37 @@ def _list_products() -> int:
             print(f"  Marca esperada: {product.expected_brand}")
         if product.expected_model:
             print(f"  Modelo esperado: {product.expected_model}")
+        if product.expected_variant:
+            variant = ", ".join(
+                f"{key}={value}"
+                for key, value in sorted(product.expected_variant.items())
+            )
+            print(f"  Variante esperada: {variant}")
+        print(
+            "  Tipo esperado: "
+            f"{'accesorio' if product.expected_is_accessory else 'producto principal'}"
+        )
         print(f"  URL: {product.source_url}")
+    return 0
+
+
+def _set_product_active(product_id: UUID, *, active: bool) -> int:
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    try:
+        with session_scope(factory) as session:
+            product = TrackedProductRepository(session).set_active(
+                product_id,
+                active=active,
+            )
+            label = product.label if product is not None else None
+    finally:
+        engine.dispose()
+    if label is None:
+        print(f"No existe un producto con ID {product_id}.", file=sys.stderr)
+        return 2
+    state = "activado" if active else "desactivado"
+    print(f"Producto {state}: {label} ({product_id}).")
     return 0
 
 
@@ -499,6 +683,223 @@ def _history(limit: int) -> int:
     return 0
 
 
+def _analyze(limit: int) -> int:
+    settings = RuntimeSettings.from_env()
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    counters = {
+        "processed": 0,
+        "processing_errors": 0,
+        "rejected": 0,
+        "no_deal": 0,
+        "alert_candidates": 0,
+        "notifications_reserved": 0,
+        "duplicates_suppressed": 0,
+    }
+    try:
+        for _position in range(limit):
+            with session_scope(factory) as session:
+                batch = DetectionService(session, settings).process_new(limit=1)
+            if batch.processed == 0:
+                break
+            for field_name in counters:
+                counters[field_name] += getattr(batch, field_name)
+    finally:
+        engine.dispose()
+    summary = DetectionBatchSummary(**counters)
+
+    print(
+        "Análisis terminado: "
+        f"procesadas={summary.processed}, "
+        f"errores_aislados={summary.processing_errors}, "
+        f"descartadas={summary.rejected}, "
+        f"sin_oferta={summary.no_deal}, "
+        f"candidatas={summary.alert_candidates}, "
+        f"alertas_pendientes={summary.notifications_reserved}, "
+        f"duplicadas_omitidas={summary.duplicates_suppressed}."
+    )
+    return 0
+
+
+def _notify(limit: int) -> int:
+    settings = RuntimeSettings.from_env()
+    notifier = TelegramNotifier(
+        token=settings.telegram_token,
+        chat_id=settings.telegram_chat_id,
+        enabled=settings.telegram_enabled,
+    )
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    try:
+        summary = NotificationDispatcher(
+            factory,
+            settings,
+            notifier,
+        ).dispatch_due(limit=limit)
+    finally:
+        engine.dispose()
+
+    if not summary.configured:
+        print(
+            "Telegram no está configurado. Las alertas permanecen pendientes; "
+            "define TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID en .env."
+        )
+        return 0
+    print(
+        "Notificaciones terminadas: "
+        f"reclamadas={summary.claimed}, enviadas={summary.sent}, "
+        f"reintentables={summary.retrying}, fallidas={summary.failed}, "
+        f"liberadas={summary.released}."
+    )
+    return 0 if summary.failed == 0 else 1
+
+
+def _list_alerts(limit: int, *, include_all: bool = False) -> int:
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    try:
+        with session_scope(factory) as session:
+            statement = (
+                select(
+                    DealDetection,
+                    PriceObservationRecord,
+                    TrackedProduct.label,
+                )
+                .join(
+                    PriceObservationRecord,
+                    PriceObservationRecord.id == DealDetection.observation_id,
+                )
+                .outerjoin(
+                    TrackedProduct,
+                    TrackedProduct.id == DealDetection.tracked_product_id,
+                )
+            )
+            if not include_all:
+                statement = statement.where(DealDetection.classification != "none")
+            statement = statement.order_by(
+                DealDetection.detected_at.desc(),
+                DealDetection.id.desc(),
+            ).limit(limit)
+            alerts = list(session.execute(statement).all())
+    finally:
+        engine.dispose()
+
+    if not alerts:
+        if include_all:
+            print("Todavía no hay decisiones del detector.")
+        else:
+            print("Todavía no hay ofertas ni posibles errores detectados.")
+        return 0
+    label = "Decisiones del detector" if include_all else "Detecciones de oferta"
+    print(f"{label}: {len(alerts)}")
+    for detection, observation, tracked_label in alerts:
+        print()
+        print(
+            f"- {_format_datetime(detection.detected_at)} | "
+            f"{tracked_label or observation.title}"
+        )
+        print(
+            f"  Clasificación: {detection.classification} | "
+            f"Puntuación: {detection.score}/100"
+        )
+        print(
+            f"  Precio: {_format_price(observation.currency, detection.current_price)} | "
+            "Referencia: "
+            f"{_format_price(observation.currency, detection.reference_price)}"
+        )
+        print(f"  Alerta: {detection.notification_status}")
+        if detection.reasons:
+            print(f"  Motivos: {', '.join(detection.reasons)}")
+        if detection.rejection_reasons:
+            print(f"  Descartes: {', '.join(detection.rejection_reasons)}")
+        print(f"  URL: {observation.source_url}")
+    return 0
+
+
+def _cycle(args: argparse.Namespace) -> int:
+    print("=== Rastreo ===")
+    crawl_status = _isolated_cycle_stage(
+        "rastreo",
+        lambda: _crawl(
+            argparse.Namespace(force=False, limit=args.crawl_limit)
+        ),
+    )
+    print()
+    print("=== Detección ===")
+    analysis_status = _isolated_cycle_stage(
+        "detección",
+        lambda: _analyze(args.analysis_limit),
+    )
+    print()
+    print("=== Alertas ===")
+    notification_status = _isolated_cycle_stage(
+        "alertas",
+        lambda: _notify(args.notification_limit),
+    )
+    return max(crawl_status, analysis_status, notification_status)
+
+
+def _isolated_cycle_stage(name: str, operation: Callable[[], int]) -> int:
+    try:
+        return int(operation())
+    except SQLAlchemyError:
+        print(
+            f"Error en {name}: PostgreSQL no pudo completar la etapa; "
+            "el ciclo continuará.",
+            file=sys.stderr,
+        )
+        return 1
+    except (RuntimeError, ValueError) as error:
+        print(f"Error en {name}: {error}", file=sys.stderr)
+        return 1
+    except Exception as error:
+        print(
+            f"Error inesperado en {name} ({type(error).__name__}); "
+            "el ciclo continuará.",
+            file=sys.stderr,
+        )
+        return 1
+
+
+def _run_monitor(args: argparse.Namespace) -> int:
+    if args.once:
+        return _cycle(args)
+
+    settings = RuntimeSettings.from_env()
+    poll_seconds = args.poll_seconds or settings.scheduler_poll_seconds
+    command_line = [
+        sys.executable,
+        "-m",
+        "bot_ofertas.cli",
+        "cycle",
+        "--crawl-limit",
+        str(args.crawl_limit),
+        "--analysis-limit",
+        str(args.analysis_limit),
+        "--notification-limit",
+        str(args.notification_limit),
+    ]
+
+    def execute_cycle() -> None:
+        completed = subprocess.run(
+            command_line,
+            cwd=_PROJECT_ROOT,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"el ciclo terminó con código {completed.returncode}"
+            )
+
+    print(
+        f"Monitor iniciado; ejecutará un ciclo cada {poll_seconds} segundos. "
+        "Presiona Ctrl+C para detenerlo."
+    )
+    LocalScheduler(execute_cycle, poll_seconds).run()
+    print("Monitor detenido.")
+    return 0
+
+
 def _format_datetime(value: datetime | None) -> str:
     if value is None:
         return "nunca"
@@ -522,10 +923,24 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _add_product(args)
     if args.command == "product" and args.product_command == "list":
         return _list_products()
+    if args.command == "product" and args.product_command == "enable":
+        return _set_product_active(args.product_id, active=True)
+    if args.command == "product" and args.product_command == "disable":
+        return _set_product_active(args.product_id, active=False)
     if args.command == "crawl":
         return _crawl(args)
     if args.command == "history":
         return _history(args.limit)
+    if args.command == "analyze":
+        return _analyze(args.limit)
+    if args.command == "notify":
+        return _notify(args.limit)
+    if args.command == "alert" and args.alert_command == "list":
+        return _list_alerts(args.limit, include_all=args.all)
+    if args.command == "cycle":
+        return _cycle(args)
+    if args.command == "run":
+        return _run_monitor(args)
     raise RuntimeError("comando no reconocido")
 
 

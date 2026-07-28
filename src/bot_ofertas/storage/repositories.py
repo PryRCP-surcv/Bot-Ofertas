@@ -11,6 +11,7 @@ from sqlalchemy import Integer, Select, cast, exists, func, or_, select, text, u
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from bot_ofertas.detection import canonicalize_variant
 from bot_ofertas.domain import PriceObservation
 from bot_ofertas.storage.models import (
     CrawlRun,
@@ -230,7 +231,7 @@ class StoreCrawlStateRepository:
 
 
 class TrackedProductRepository:
-    """Persistence operations used by the future product scheduler."""
+    """Persistence operations used by local or distributed product schedulers."""
 
     MAX_CLAIM_SIZE: ClassVar[int] = 1_000
     MAX_LEASE_DURATION: ClassVar[timedelta] = timedelta(days=1)
@@ -246,11 +247,17 @@ class TrackedProductRepository:
         label: str,
         expected_brand: str | None = None,
         expected_model: str | None = None,
+        expected_variant: dict[str, str] | None = None,
+        expected_is_accessory: bool = False,
         check_interval_minutes: int = 60,
         active: bool = True,
     ) -> TrackedProduct:
         if check_interval_minutes < 30:
             raise ValueError("check_interval_minutes must be at least 30")
+        if not isinstance(expected_is_accessory, bool):
+            raise TypeError("expected_is_accessory must be a boolean")
+        if expected_variant is not None and not isinstance(expected_variant, dict):
+            raise TypeError("expected_variant must be a dictionary")
 
         tracked_product = TrackedProduct(
             store_slug=store_slug.strip().lower(),
@@ -258,6 +265,8 @@ class TrackedProductRepository:
             label=label.strip(),
             expected_brand=expected_brand.strip() if expected_brand else None,
             expected_model=expected_model.strip() if expected_model else None,
+            expected_variant=canonicalize_variant(expected_variant or {}),
+            expected_is_accessory=expected_is_accessory,
             check_interval_minutes=check_interval_minutes,
             active=active,
         )
@@ -273,6 +282,31 @@ class TrackedProductRepository:
 
     def get(self, tracked_product_id: UUID) -> TrackedProduct | None:
         return self._session.get(TrackedProduct, tracked_product_id)
+
+    def set_active(
+        self,
+        tracked_product_id: UUID,
+        *,
+        active: bool,
+    ) -> TrackedProduct | None:
+        if not isinstance(tracked_product_id, UUID):
+            raise TypeError("tracked_product_id must be a UUID")
+        if not isinstance(active, bool):
+            raise TypeError("active must be a boolean")
+        product = self._session.scalar(
+            select(TrackedProduct)
+            .where(TrackedProduct.id == tracked_product_id)
+            .with_for_update()
+        )
+        if product is None:
+            return None
+        product.active = active
+        if not active:
+            product.lease_token = None
+            product.lease_expires_at = None
+        product.updated_at = _utc()
+        self._session.flush()
+        return product
 
     def list_active(self, *, limit: int = 100) -> list[TrackedProduct]:
         if limit <= 0:

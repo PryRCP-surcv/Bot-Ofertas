@@ -21,6 +21,10 @@ URL pública
   -> adapter.spider_class
   -> PriceObservation
   -> pipeline PostgreSQL común
+  -> historial normalizado
+  -> DealDetector común
+  -> deduplicación persistente
+  -> Telegram
 ```
 
 El registro incorpora:
@@ -177,6 +181,7 @@ estructura HTML, APIs, variantes, sellers, moneda, precios condicionados a
 tarjeta y reglas legales cambian entre sitios. Por eso cada dominio requiere una
 integración verificable.
 
-El detector de ofertas, las alertas y el scheduler automático siguen pendientes.
-Agregar un adapter amplía las fuentes del historial, pero no implementa esos
-módulos.
+El detector, el scheduler, la deduplicación y Telegram ya forman parte del flujo
+común. Al habilitar un adapter compatible, sus observaciones alimentan esos
+módulos sin modificar el núcleo. Esto no elimina la revisión específica de
+precios condicionados, variantes, vendedores y casos límite de cada tienda.

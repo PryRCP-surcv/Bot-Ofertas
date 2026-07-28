@@ -37,6 +37,16 @@ def test_claims_are_exclusive_and_can_be_completed_or_released() -> None:
             check_interval_minutes=60,
         )
 
+        disabled = repository.set_active(tracked.id, active=False)
+        assert disabled is tracked
+        assert repository.claim_due(
+            limit=1,
+            store_slugs={store_slug},
+            now=checked_at,
+        ).products == ()
+        enabled = repository.set_active(tracked.id, active=True)
+        assert enabled is tracked
+
         first = repository.claim_due(
             limit=1,
             store_slugs={store_slug},

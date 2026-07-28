@@ -5,7 +5,7 @@
 
 # Python
 .venv/
-.venv.failed/
+.venv.failed*/
 __pycache__/
 *.py[cod]
 *.egg-info/

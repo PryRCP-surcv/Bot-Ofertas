@@ -25,3 +25,25 @@ def test_product_add_rejects_unknown_domain_before_database_access(capsys) -> No
     assert result == 2
     assert "no existe un adaptador" in output.err
     assert "coolbox.pe" in output.err
+
+
+def test_product_add_rejects_variant_keys_that_collide_after_normalization(
+    capsys,
+) -> None:
+    result = main(
+        [
+            "product",
+            "add",
+            "https://unknown.example.test/product",
+            "--label",
+            "Producto ambiguo",
+            "--variant",
+            "Color=Negro",
+            "--variant",
+            "cólor=Azul",
+        ]
+    )
+
+    output = capsys.readouterr()
+    assert result == 2
+    assert "cada clave de --variant debe ser única" in output.err

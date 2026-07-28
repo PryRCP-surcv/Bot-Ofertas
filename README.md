@@ -6,7 +6,8 @@ ofertas excepcionales y posibles errores de precio sin realizar compras.
 
 ## Estado actual
 
-El primer flujo funcional y la base multi-tienda están listos:
+La Fase 1 está implementada y probada en ejecución local, y la base multi-tienda
+está lista:
 
 1. Se registra una URL pública de producto.
 2. El registro de tiendas reconoce el dominio, elige el adapter habilitado y
@@ -16,6 +17,11 @@ El primer flujo funcional y la base multi-tienda están listos:
 5. Cada combinación SKU + vendedor se normaliza de forma independiente.
 6. Un pipeline común valida el resultado y PostgreSQL conserva la ejecución y
    la observación de precio.
+7. El detector compara precio anterior, mediana, mínimo histórico y precio de
+   lista, conservando señales y motivos.
+8. Una capa persistente elimina alertas repetidas y aplica reintentos.
+9. Telegram recibe las ofertas cuando sus credenciales están configuradas.
+10. Un scheduler local ejecuta el ciclo completo sin solapar corridas.
 
 La primera prueba controlada guardó correctamente una barra de sonido a
 `PEN 179.00`, con precio de lista `PEN 499.00`, disponibilidad y vendedor.
@@ -24,16 +30,19 @@ Coolbox es la única tienda habilitada hoy. La arquitectura ya permite incorpora
 otras tiendas sin acoplar la CLI, el pipeline ni el esquema de historial a
 Coolbox.
 
-Todavía no están implementados el detector estadístico, las alertas ni el
-servicio que programa ejecuciones automáticamente. Esos son los siguientes
-módulos.
+El detector, la deduplicación, Telegram y el scheduler ya están implementados.
+La siguiente fase incorporará más tiendas. Aún no existen dashboard web,
+WhatsApp, Gmail ni despliegue permanente en un servidor.
+
+Telegram es actualmente un canal de salida: envía alertas, pero todavía no
+responde `/start`, `/ofertas`, `Hola` ni otros comandos. El monitoreo continuo
+solo funciona mientras `uv run bot-ofertas run` permanezca activo.
 
 ## Dónde está cada cosa
 
-- Código y documentación, en Windows:
-  `C:\Users\SURICH\Documents\Proyectos\bot-ofertas`
-- La misma carpeta vista desde Ubuntu:
-  `/mnt/c/Users/SURICH/Documents/Proyectos/bot-ofertas`
+- Código y documentación: la carpeta donde se clonó este repositorio en Windows.
+- Esa misma carpeta desde Ubuntu/WSL:
+  `/mnt/c/Users/TU_USUARIO_WINDOWS/Documents/Proyectos/bot-ofertas`
 - Entorno Python, dentro de Ubuntu:
   `$HOME/.venvs/bot-ofertas`
 - PostgreSQL, dentro de Docker Desktop:
@@ -41,7 +50,9 @@ módulos.
 - Datos de PostgreSQL:
   volumen persistente `bot-ofertas_postgres_data`
 
-Apagar la PC no elimina el proyecto ni el historial.
+Apagar la PC no elimina el proyecto ni el historial, pero sí detiene
+temporalmente los rastreos y las alertas. Después de reiniciar hay que volver a
+iniciar el monitor.
 
 ## Volver a ejecutarlo después de reiniciar
 
@@ -50,7 +61,7 @@ Apagar la PC no elimina el proyecto ni el historial.
 3. Ejecuta:
 
 ```bash
-cd /mnt/c/Users/SURICH/Documents/Proyectos/bot-ofertas
+cd /mnt/c/Users/TU_USUARIO_WINDOWS/Documents/Proyectos/bot-ofertas
 export PATH="$HOME/.local/bin:$PATH"
 export UV_PROJECT_ENVIRONMENT="$HOME/.venvs/bot-ofertas"
 docker compose up -d postgres
@@ -65,6 +76,12 @@ docker compose ps
 uv run bot-ofertas store list
 uv run bot-ofertas product list
 uv run bot-ofertas history
+```
+
+Para mantener el monitor activo después de comprobar el estado:
+
+```bash
+uv run bot-ofertas run
 ```
 
 En esta computadora PostgreSQL usa el puerto `5433` del host porque el `5432`
@@ -86,6 +103,7 @@ uv run bot-ofertas product add \
   --label "Barra de sonido Decibel S25" \
   --brand "Decibel" \
   --model "S25" \
+  --variant "Color=Negro" \
   --interval 60
 ```
 
@@ -100,20 +118,31 @@ Listar productos:
 uv run bot-ofertas product list
 ```
 
-Consultar solo los productos cuyo intervalo ya venció:
+Ejecutar un ciclo completo:
 
 ```bash
-uv run bot-ofertas crawl
+uv run bot-ofertas run --once
 ```
 
-Ver el historial reciente:
+Mantener el monitor activo:
+
+```bash
+uv run bot-ofertas run
+```
+
+También se pueden ejecutar por separado `crawl`, `analyze` y `notify`. Para ver
+resultados:
 
 ```bash
 uv run bot-ofertas history --limit 20
+uv run bot-ofertas alert list --limit 20
 ```
 
 Existe `crawl --force` para pruebas manuales, pero no debe usarse repetidamente.
 El límite por ejecución es 20 URLs y el intervalo mínimo aceptado es 30 minutos.
+
+La guía completa de configuración, Telegram, estados, deduplicación y
+recuperación está en [Operación de la Fase 1](docs/phase1-operations.md).
 
 Detener PostgreSQL sin perder el historial:
 
@@ -136,13 +165,18 @@ Incluir la prueba transaccional contra PostgreSQL local:
 RUN_POSTGRES_TESTS=1 uv run pytest -q -p no:cacheprovider
 ```
 
-La prueba de PostgreSQL revierte sus datos al terminar.
+Las pruebas de PostgreSQL utilizan datos temporales y los revierten o eliminan
+al terminar.
 
 Revisión estática:
 
 ```bash
 uv run ruff check .
 ```
+
+El workflow de GitHub Actions ejecuta Ruff, las pruebas unitarias, todas las
+migraciones y las pruebas de integración con un PostgreSQL efímero en cada
+`push` a `main` y en cada pull request. Telegram permanece desactivado en CI.
 
 ## Arquitectura multi-tienda
 
@@ -155,7 +189,10 @@ URL registrada
   -> normalización por SKU + vendedor
   -> validación PriceObservation
   -> pipeline PostgreSQL común
-  -> historial consultable
+  -> historial inmutable
+  -> DealDetector puro
+  -> deduplicación persistente
+  -> delivery Telegram con lease y backoff
 ```
 
 `StoreRegistry` reúne adapters integrados en el proyecto y adapters publicados
@@ -188,6 +225,11 @@ Tablas:
 - `crawl_runs`: auditoría de cada ejecución, estado y errores.
 - `price_observations`: historial inmutable de precio, precio de lista, cuotas,
   variante, vendedor, condición y disponibilidad.
+- `deal_detections`: decisión, puntuación, señales, referencias y descartes por
+  observación.
+- `offer_alert_states`: ventana de deduplicación por oferta exacta.
+- `notification_deliveries`: entregas Telegram, leases, intentos y errores
+  sanitizados.
 
 El precio total y las cuotas son campos distintos. Un SKU agotado puede conservar
 su estado, pero su precio centinela se descarta. Los vendedores marketplace nunca
@@ -218,28 +260,25 @@ pero siguen siendo necesarias la política y validación de cada dominio.
 
 ## Configuración
 
-`.env` contiene la configuración local y no se guarda en Git. Para otra máquina:
+`.env` contiene la configuración local y no se guarda en Git. Para otra máquina,
+crea el archivo solo si todavía no existe:
 
 ```bash
-cp .env.example .env
+if [ ! -e .env ]; then
+  cp .env.example .env
+else
+  echo ".env ya existe; no fue sobrescrito."
+fi
 ```
 
 Después se debe reemplazar la contraseña de ejemplo por una larga y aleatoria.
-Nunca publiques ni pegues el contenido real de `.env`.
+`.env.example` solo contiene marcadores públicos. Los secretos reales pertenecen
+exclusivamente a `.env`, que no debe ejecutarse con `source`, publicarse ni
+mostrarse en capturas.
 
 ## Siguientes hitos
 
-Construir el detector con varias señales y estados auditables:
-
-- caída frente al historial del mismo SKU y vendedor;
-- desviación frente a mediana móvil;
-- descuento contra precio de lista como señal secundaria;
-- exclusión de cuotas, agotados, accesorios, variantes, marketplace y
-  condiciones distintas;
-- confirmación en una segunda consulta antes de alertar;
-- clasificación `oferta fuerte` o `posible error`, nunca certeza absoluta.
-
-Después se incorporarán los canales de alerta (Telegram, WhatsApp o correo) y un
-scheduler que ejecute workers automáticamente. Actualmente `crawl` se inicia de
-forma manual, aunque su sistema de leases ya está preparado para múltiples
-workers.
+La Fase 2 agregará tiendas peruanas una por una mediante adapters revisados,
+fixtures y pruebas. Después se mejorarán la confirmación de candidatos, la
+comparación entre tiendas y el panel de administración. WhatsApp y correo serán
+canales adicionales sobre el mismo contrato de notificaciones.
