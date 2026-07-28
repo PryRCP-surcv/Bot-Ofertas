@@ -14,7 +14,70 @@ from typing import Any
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from uuid import UUID
 
+from bot_ofertas.detection import COMMERCIAL_CONDITION_SIGNATURE_PREFIX
+
 MAX_REPORTED_QUANTITY = 99_999
+
+_TEASER_FIELD_KEYS = frozenset({"teasers", "promotionteasers"})
+_FINANCING_FIELD_MARKERS = ("installment", "cuota", "financing", "financiamiento")
+_PROMOTIONAL_METADATA_KEY_PATTERNS = (
+    re.compile(r"\bpromocion(?:es)?\b"),
+    re.compile(r"\bpromotion(?:s)?\b"),
+    re.compile(r"\bdescuento(?:s)?\b"),
+    re.compile(r"\bdiscount(?:s)?\b"),
+    re.compile(r"\bbeneficio(?:s)?\b"),
+    re.compile(r"\bbenefit(?:s)?\b"),
+)
+_EXPLICIT_CONDITIONAL_PROMOTION_PATTERNS = (
+    re.compile(r"\bpromocion\s+condicionada\b"),
+    re.compile(r"\bprecio\s+condicionado\b"),
+    re.compile(r"\bconditional\s+promotion\b"),
+    re.compile(r"\bconditional\s+price\b"),
+)
+_CONDITIONAL_PRICE_FLAG_PATTERNS = (
+    (
+        "payment_method_price",
+        (
+            re.compile(r"\bpayment\s+(?:method|system)(?:\s+id|\s+price)?\b"),
+            re.compile(r"\b(?:metodo|medio|sistema)\s+de\s+pago\b"),
+            re.compile(r"\btarjeta\s+oh\b"),
+            re.compile(r"\bprecio\s+(?:oh|cmr|cencosud|ripley)\b"),
+            re.compile(r"\bprecio\b.{0,40}\b(?:tarjeta|card)\b"),
+            re.compile(r"\bprice\b.{0,40}\bcard\b"),
+        ),
+    ),
+    (
+        "membership_price",
+        (
+            re.compile(r"\bmembresia\b"),
+            re.compile(r"\bmembership\b"),
+            re.compile(r"\bmember\s+price\b"),
+            re.compile(r"\bprecio\b.{0,30}\b(?:miembro|socio)\b"),
+            re.compile(r"\b(?:club\s+price|precio\s+club)\b"),
+            re.compile(r"\bclub\b"),
+        ),
+    ),
+    (
+        "coupon_price",
+        (
+            re.compile(r"\bcupon\b"),
+            re.compile(r"\bcoupon\b"),
+            re.compile(r"\b(?:promo|promotion)\s+code\b"),
+            re.compile(r"\bcodigo\s+(?:promocional|de\s+descuento)\b"),
+        ),
+    ),
+    (
+        "minimum_quantity_price",
+        (
+            re.compile(r"\bminimum\s+(?:order\s+)?quantity\b"),
+            re.compile(r"\bmin\s+quantity\b"),
+            re.compile(r"\bcantidad\s+minima\b"),
+            re.compile(r"\b(?:compra\s+minima|minimo\s+de\s+compra)\b"),
+            re.compile(r"\bminimum\s+purchase\b"),
+            re.compile(r"\bdesde\s+\d+\s+unidades?\b"),
+        ),
+    ),
+)
 
 
 class VtexPayloadError(ValueError):
@@ -148,6 +211,57 @@ def canonical_payload_hash(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def conditional_vtex_price_flags(
+    product: Mapping[str, Any],
+    item: Mapping[str, Any],
+    _seller: Mapping[str, Any],
+    offer: Mapping[str, Any],
+) -> list[str]:
+    """Classify evidence that VTEX's displayed price has extra conditions.
+
+    VTEX installments describe financing and are intentionally excluded. Promotion
+    teasers and narrowly selected promotion metadata are inspected instead, so a
+    financing option alone never turns the cash price into a conditioned price.
+    """
+
+    evidence: list[Any] = []
+    has_teaser_evidence = False
+
+    for container in (product, item, offer):
+        for raw_key, value in container.items():
+            normalized_key = _conditional_searchable_text(raw_key)
+            compact_key = re.sub(r"[^a-z0-9]", "", normalized_key)
+
+            if any(marker in compact_key for marker in _FINANCING_FIELD_MARKERS):
+                continue
+
+            if compact_key in _TEASER_FIELD_KEYS:
+                if _has_meaningful_content(value):
+                    evidence.append({raw_key: value})
+                    has_teaser_evidence = True
+                continue
+
+            if _is_relevant_promotion_metadata_key(normalized_key) and (
+                _has_meaningful_content(value)
+            ):
+                evidence.append({raw_key: value})
+
+    searchable_evidence = _conditional_searchable_text(evidence)
+    flags = [
+        flag
+        for flag, patterns in _CONDITIONAL_PRICE_FLAG_PATTERNS
+        if any(pattern.search(searchable_evidence) for pattern in patterns)
+    ]
+    has_explicit_conditional_metadata = any(
+        pattern.search(searchable_evidence) for pattern in _EXPLICIT_CONDITIONAL_PROMOTION_PATTERNS
+    )
+    if has_teaser_evidence or flags or has_explicit_conditional_metadata:
+        flags.append("conditional_promotion_price")
+        signature = _commercial_condition_evidence_hash(evidence)
+        flags.append(f"{COMMERCIAL_CONDITION_SIGNATURE_PREFIX}{signature}")
+    return flags
+
+
 def parse_vtex_products(
     payload: Any,
     source_url: str,
@@ -200,9 +314,7 @@ def parse_vtex_products(
         if items is None:
             items = []
         if not isinstance(items, list):
-            raise config.payload_error(
-                f"Product {product_id!r} has a non-list 'items' field."
-            )
+            raise config.payload_error(f"Product {product_id!r} has a non-list 'items' field.")
 
         for item_index, item in enumerate(items):
             if not isinstance(item, Mapping):
@@ -231,9 +343,7 @@ def parse_vtex_products(
             if sellers is None:
                 sellers = []
             if not isinstance(sellers, list):
-                raise config.payload_error(
-                    f"SKU {sku_id!r} has a non-list 'sellers' field."
-                )
+                raise config.payload_error(f"SKU {sku_id!r} has a non-list 'sellers' field.")
 
             for seller_index, seller in enumerate(sellers):
                 if not isinstance(seller, Mapping):
@@ -271,9 +381,7 @@ def parse_vtex_products(
                     quality_flags.append("available_quantity_sentinel")
                 if quantity_is_invalid:
                     quality_flags.append("invalid_available_quantity")
-                quality_flags.extend(
-                    config.offer_quality_flags(product, item, seller, offer)
-                )
+                quality_flags.extend(config.offer_quality_flags(product, item, seller, offer))
                 currency, currency_quality_flag = _currency_code(
                     offer,
                     default_currency=config.default_currency,
@@ -340,6 +448,122 @@ def _canonical_json_default(value: Any) -> str:
     if isinstance(value, datetime):
         return _normalize_observed_at(value).isoformat()
     raise TypeError(f"Unsupported JSON value: {type(value).__name__}")
+
+
+def _is_relevant_promotion_metadata_key(normalized_key: str) -> bool:
+    if any(pattern.search(normalized_key) for pattern in _PROMOTIONAL_METADATA_KEY_PATTERNS):
+        return True
+    if any(
+        pattern.search(normalized_key)
+        for _, patterns in _CONDITIONAL_PRICE_FLAG_PATTERNS
+        for pattern in patterns
+    ):
+        return True
+    return any(
+        pattern.search(normalized_key) for pattern in _EXPLICIT_CONDITIONAL_PROMOTION_PATTERNS
+    )
+
+
+def _conditional_searchable_text(value: Any) -> str:
+    parts: list[str] = []
+
+    def collect(candidate: Any) -> None:
+        if isinstance(candidate, Mapping):
+            for key, nested_value in candidate.items():
+                collect(key)
+                collect(nested_value)
+        elif isinstance(candidate, (list, tuple, set, frozenset)):
+            for nested_value in candidate:
+                collect(nested_value)
+        elif isinstance(candidate, str):
+            parts.append(re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", candidate))
+        elif isinstance(candidate, (int, Decimal)) and not isinstance(candidate, bool):
+            parts.append(str(candidate))
+
+    collect(value)
+    normalized = unicodedata.normalize("NFKD", " ".join(parts).casefold())
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    return " ".join(normalized.split())
+
+
+def _commercial_condition_evidence_hash(evidence: Iterable[Any]) -> str:
+    """Hash only canonical promotion evidence, independent of payload ordering."""
+
+    canonical_entries = {
+        _canonical_condition_json(_canonical_condition_value(entry)) for entry in evidence
+    }
+    if not canonical_entries:  # pragma: no cover - callers require real evidence
+        raise RuntimeError("commercial condition requires promotional evidence")
+    canonical_evidence = json.dumps(
+        sorted(canonical_entries),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical_evidence.encode("utf-8")).hexdigest()
+
+
+def _canonical_condition_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        entries = [
+            [
+                _canonical_condition_key(raw_key),
+                _canonical_condition_value(nested_value),
+            ]
+            for raw_key, nested_value in value.items()
+        ]
+        return [
+            "mapping",
+            sorted(entries, key=_canonical_condition_json),
+        ]
+    if isinstance(value, (list, tuple, set, frozenset)):
+        entries = [_canonical_condition_value(item) for item in value]
+        return [
+            "sequence",
+            sorted(entries, key=_canonical_condition_json),
+        ]
+    if isinstance(value, str):
+        return ["text", _conditional_searchable_text(value)]
+    if value is None:
+        return ["null"]
+    if isinstance(value, bool):
+        return ["boolean", value]
+    if isinstance(value, (int, float, Decimal)):
+        try:
+            number = Decimal(str(value))
+        except InvalidOperation:
+            return ["number", str(value).casefold()]
+        normalized = format(number.normalize(), "f") if number.is_finite() else str(number)
+        return ["number", normalized]
+    return ["text", _conditional_searchable_text(str(value))]
+
+
+def _canonical_condition_key(raw_key: Any) -> str:
+    key = _conditional_searchable_text(raw_key)
+    key = re.sub(r"\bk backing field\b", "", key)
+    key = " ".join(key.split())
+    if re.sub(r"[^a-z0-9]", "", key) in _TEASER_FIELD_KEYS:
+        return "promotion teasers"
+    return key
+
+
+def _canonical_condition_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _has_meaningful_content(value: Any) -> bool:
+    if value is None or value is False:
+        return False
+    if isinstance(value, (str, bytes, Mapping, list, tuple, set, frozenset)):
+        return bool(value)
+    if isinstance(value, (int, Decimal)) and not isinstance(value, bool):
+        return value != 0
+    return True
 
 
 def _normalize_observed_at(value: datetime | str) -> datetime:
@@ -645,6 +869,7 @@ __all__ = [
     "VtexPayloadError",
     "build_vtex_catalog_url",
     "canonical_payload_hash",
+    "conditional_vtex_price_flags",
     "normalize_vtex_product_url",
     "parse_vtex_products",
 ]

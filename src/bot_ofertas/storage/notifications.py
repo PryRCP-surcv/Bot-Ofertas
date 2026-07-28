@@ -41,6 +41,20 @@ def _safe_text(value: str | None, *, maximum: int) -> str | None:
     return normalized[:maximum] or None
 
 
+def _condition_flags(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+
+    flags: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        normalized = item.strip().casefold()
+        if normalized and normalized not in flags:
+            flags.append(normalized)
+    return tuple(flags)
+
+
 @dataclass(frozen=True, slots=True)
 class NotificationClaim:
     delivery_id: int
@@ -56,6 +70,9 @@ class NotificationClaim:
     discount_percent: Decimal | None
     comparison_label: str
     store_slug: str
+    confidence_score: int
+    confirmation_count: int
+    condition_flags: tuple[str, ...] = ()
 
 
 class NotificationDeliveryRepository:
@@ -165,6 +182,9 @@ class NotificationDeliveryRepository:
                     discount_percent=discount,
                     comparison_label=comparison_label,
                     store_slug=observation.store_slug,
+                    confidence_score=detection.confidence_score,
+                    confirmation_count=detection.confirmation_count,
+                    condition_flags=_condition_flags(observation.quality_flags),
                 )
             )
         self._session.flush()
@@ -271,8 +291,7 @@ class NotificationDeliveryRepository:
             delivery.lease_expires_at = None
             delivery.last_error_code = delivery.last_error_code or "attempts_exhausted"
             delivery.last_error = (
-                delivery.last_error
-                or "La entrega agotó sus intentos después de perder un lease."
+                delivery.last_error or "La entrega agotó sus intentos después de perder un lease."
             )
             delivery.updated_at = now
             detection.notification_status = "failed"
@@ -308,20 +327,19 @@ def _comparison(detection: DealDetection) -> tuple[str, Decimal | None]:
         return "Precio de referencia", None
     labels = (
         ("previous_price", "Precio anterior"),
-        ("historical_median", "Mediana histórica"),
+        ("median_7d", "Mediana de 7 días"),
+        ("median_30d", "Mediana de 30 días"),
+        ("historical_median", "Mediana de 90 días"),
+        ("equivalent_median", "Mediana de productos equivalentes"),
         ("historical_minimum", "Mínimo histórico"),
         ("list_price", "Precio de lista"),
     )
     primary_signal = detection.metrics.get("primary_signal_kind")
     if isinstance(primary_signal, str):
         labels = tuple(
-            (signal_name, label)
-            for signal_name, label in labels
-            if signal_name == primary_signal
+            (signal_name, label) for signal_name, label in labels if signal_name == primary_signal
         ) + tuple(
-            (signal_name, label)
-            for signal_name, label in labels
-            if signal_name != primary_signal
+            (signal_name, label) for signal_name, label in labels if signal_name != primary_signal
         )
     best_label = "Precio de referencia"
     best_discount: Decimal | None = None
@@ -337,9 +355,7 @@ def _comparison(detection: DealDetection) -> tuple[str, Decimal | None]:
             continue
         raw_discount = raw_signal.get("discount_percent")
         best_label = label
-        best_discount = (
-            Decimal(str(raw_discount)) if raw_discount is not None else None
-        )
+        best_discount = Decimal(str(raw_discount)) if raw_discount is not None else None
         break
     return best_label, best_discount
 

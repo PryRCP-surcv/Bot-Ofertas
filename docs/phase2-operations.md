@@ -110,10 +110,11 @@ uv run bot-ofertas product add \
 
 El parser solo acepta como base verificable una unidad con multiplicador `1`.
 Una unidad ausente, por peso, superficie, longitud o con otro multiplicador
-recibe `unsupported_price_basis`. Promociones condicionadas reciben otro flag
-bloqueante. Además, mientras no exista una ubicación verificable, todas las
-observaciones Promart reciben `location_context_unverified`: se guardan para
-historial, pero no generan alertas.
+recibe `unsupported_price_basis`, que sí bloquea por no ser comparable. Las
+promociones condicionadas reciben flags informativos y pueden alertar mostrando
+sus condiciones. Sin embargo, mientras no exista una ubicación verificable,
+todas las observaciones Promart reciben `location_context_unverified`: se
+guardan para historial, pero no generan alertas.
 
 Para revisar lo registrado:
 
@@ -161,9 +162,17 @@ vendedor. Se conserva:
 
 Para Oechsle y Promart el vendedor propio debe identificarse con `sellerId=1` y
 la identidad esperada de la tienda. Los demás vendedores permanecen como
-marketplace. La moneda admitida para alertas es PEN. Cuotas y promociones
-condicionadas nunca se convierten en precio total: las cuotas se almacenan en
-su estructura y las promociones detectadas generan un flag bloqueante.
+marketplace. La moneda admitida para alertas es PEN. Una cuota individual nunca
+se convierte en precio total y se almacena en su estructura separada. Tarjeta o
+medio de pago, membresía, cupón, cantidad mínima y promoción son condiciones
+informativas: se muestran en la CLI y Telegram y deben coincidir entre las dos
+observaciones de confirmación mediante su familia y una huella opaca de la
+condición exacta.
+
+Continúan bloqueando los problemas de identidad o vendedor, variante, ubicación,
+base de precio, moneda, precio o stock, además de los flags desconocidos. Las
+referencias históricas y equivalentes generales solo utilizan observaciones
+limpias, sin flags de calidad.
 La disponibilidad procede del catálogo online público y no garantiza stock de
 entrega para un distrito específico de Lima.
 
@@ -239,10 +248,11 @@ uv run bot-ofertas alert list --all --limit 20
 ```
 
 `history` muestra vendedor, variante, condición, marketplace, cantidad de
-opciones de cuota y flags de calidad. `alert list --all` repite ese contexto y
-explica tanto las ofertas como los rechazos por marketplace, moneda, condición,
-variante u otros controles. Una alerta sigue siendo un indicio y no garantiza
-que el precio o el stock continúen disponibles.
+opciones de cuota, condiciones comerciales y advertencias de calidad.
+`alert list --all` repite ese contexto y explica tanto las ofertas como los
+rechazos por marketplace, moneda, condición, variante u otros controles. Una
+alerta sigue siendo un indicio y no garantiza que el precio o el stock continúen
+disponibles.
 
 ## 7. Detenerse ante bloqueos
 

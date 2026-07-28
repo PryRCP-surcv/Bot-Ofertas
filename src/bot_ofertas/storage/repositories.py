@@ -16,6 +16,8 @@ from bot_ofertas.domain import PriceObservation
 from bot_ofertas.storage.models import (
     CrawlRun,
     CrawlRunStatus,
+    EquivalentProductGroup,
+    EquivalentProductMembership,
     PriceObservationRecord,
     StoreCrawlState,
     TrackedProduct,
@@ -294,9 +296,7 @@ class TrackedProductRepository:
         if not isinstance(active, bool):
             raise TypeError("active must be a boolean")
         product = self._session.scalar(
-            select(TrackedProduct)
-            .where(TrackedProduct.id == tracked_product_id)
-            .with_for_update()
+            select(TrackedProduct).where(TrackedProduct.id == tracked_product_id).with_for_update()
         )
         if product is None:
             return None
@@ -304,6 +304,31 @@ class TrackedProductRepository:
         if not active:
             product.lease_token = None
             product.lease_expires_at = None
+        product.updated_at = _utc()
+        self._session.flush()
+        return product
+
+    def set_expected_variant(
+        self,
+        tracked_product_id: UUID,
+        *,
+        expected_variant: dict[str, str],
+    ) -> TrackedProduct | None:
+        """Set the exact variant selected by the operator."""
+
+        if not isinstance(tracked_product_id, UUID):
+            raise TypeError("tracked_product_id must be a UUID")
+        if not isinstance(expected_variant, dict):
+            raise TypeError("expected_variant must be a dictionary")
+        normalized_variant = canonicalize_variant(expected_variant)
+        if not normalized_variant:
+            raise ValueError("expected_variant must not be empty")
+        product = self._session.scalar(
+            select(TrackedProduct).where(TrackedProduct.id == tracked_product_id).with_for_update()
+        )
+        if product is None:
+            return None
+        product.expected_variant = normalized_variant
         product.updated_at = _utc()
         self._session.flush()
         return product
@@ -532,6 +557,134 @@ class TrackedProductRepository:
         if succeeded:
             tracked_product.last_success_at = timestamp
         self._session.flush()
+
+
+class EquivalentProductRepository:
+    """Manage operator-verified equivalence between exact cross-store listings."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def create_group(
+        self,
+        *,
+        name: str,
+        brand: str,
+        model: str,
+        canonical_variant: dict[str, str] | None = None,
+    ) -> EquivalentProductGroup:
+        normalized_name = " ".join(name.split())
+        normalized_brand = " ".join(brand.split())
+        normalized_model = " ".join(model.split())
+        if not normalized_name or not normalized_brand or not normalized_model:
+            raise ValueError("name, brand, and model must not be empty")
+        group = EquivalentProductGroup(
+            name=normalized_name,
+            brand=normalized_brand,
+            model=normalized_model,
+            canonical_variant=canonicalize_variant(canonical_variant or {}),
+        )
+        self._session.add(group)
+        self._session.flush()
+        return group
+
+    def list_groups(self) -> list[EquivalentProductGroup]:
+        statement = select(EquivalentProductGroup).order_by(
+            EquivalentProductGroup.active.desc(),
+            EquivalentProductGroup.name.asc(),
+        )
+        return list(self._session.scalars(statement))
+
+    def get_group(
+        self,
+        group_id: UUID,
+        *,
+        lock: bool = False,
+    ) -> EquivalentProductGroup | None:
+        statement = select(EquivalentProductGroup).where(EquivalentProductGroup.id == group_id)
+        if lock:
+            statement = statement.with_for_update()
+        return self._session.scalar(statement)
+
+    def add_product(
+        self,
+        *,
+        group_id: UUID,
+        tracked_product_id: UUID,
+        verified_at: datetime | None = None,
+    ) -> EquivalentProductMembership:
+        group = self.get_group(group_id, lock=True)
+        if group is None or not group.active:
+            raise ValueError("the equivalence group does not exist or is inactive")
+        product = self._session.scalar(
+            select(TrackedProduct).where(TrackedProduct.id == tracked_product_id).with_for_update()
+        )
+        if product is None:
+            raise ValueError("the tracked product does not exist")
+        if product.expected_brand is None or product.expected_model is None:
+            raise ValueError("the tracked product needs an expected brand and model first")
+        if (
+            product.expected_brand.casefold() != group.brand.casefold()
+            or product.expected_model.casefold() != group.model.casefold()
+        ):
+            raise ValueError(
+                "the tracked product brand and model do not match the equivalence group"
+            )
+        if canonicalize_variant(product.expected_variant) != canonicalize_variant(
+            group.canonical_variant
+        ):
+            raise ValueError("the tracked product variant does not match the equivalence group")
+        same_store_member = self._session.scalar(
+            select(EquivalentProductMembership.tracked_product_id)
+            .join(
+                TrackedProduct,
+                TrackedProduct.id == EquivalentProductMembership.tracked_product_id,
+            )
+            .where(
+                EquivalentProductMembership.group_id == group.id,
+                TrackedProduct.store_slug == product.store_slug,
+                EquivalentProductMembership.tracked_product_id != product.id,
+            )
+            .limit(1)
+        )
+        if same_store_member is not None:
+            raise ValueError("an equivalence group can contain only one listing per store")
+        membership = EquivalentProductMembership(
+            group_id=group.id,
+            tracked_product_id=product.id,
+            verified_at=_utc(verified_at),
+        )
+        self._session.add(membership)
+        self._session.flush()
+        return membership
+
+    def remove_product(
+        self,
+        *,
+        group_id: UUID,
+        tracked_product_id: UUID,
+    ) -> bool:
+        membership = self._session.get(
+            EquivalentProductMembership,
+            (group_id, tracked_product_id),
+        )
+        if membership is None:
+            return False
+        self._session.delete(membership)
+        self._session.flush()
+        return True
+
+    def members(self, group_id: UUID) -> list[TrackedProduct]:
+        statement = (
+            select(TrackedProduct)
+            .join(
+                EquivalentProductMembership,
+                EquivalentProductMembership.tracked_product_id == TrackedProduct.id,
+            )
+            .where(EquivalentProductMembership.group_id == group_id)
+            .order_by(TrackedProduct.store_slug.asc(), TrackedProduct.label.asc())
+        )
+        return list(self._session.scalars(statement))
 
 
 class CrawlRunRepository:

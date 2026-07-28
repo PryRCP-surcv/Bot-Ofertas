@@ -81,6 +81,29 @@ def test_parser_separates_sku_seller_variant_and_installments() -> None:
     assert own.installments[0].count == 4
     assert own.installments[0].total == Decimal("199.9")
     assert own.price != own.installments[0].amount
+    assert "conditional_promotion_price" not in own.quality_flags
+    assert "payment_method_price" not in own.quality_flags
+
+
+def test_parser_marks_membership_teasers_with_granular_and_generic_flags() -> None:
+    payload = load_fixture()
+    offer = payload[0]["items"][0]["sellers"][0]["commertialOffer"]
+    offer["PromotionTeasers"] = [{"name": "Precio exclusivo de membresía Coolbox"}]
+
+    observations = parse_coolbox_products(
+        payload,
+        source_url=SOURCE_URL,
+        tracked_product_id=None,
+        observed_at=datetime(2026, 7, 26, 15, 0, tzinfo=UTC),
+    )
+    own = next(
+        PriceObservation(**values)
+        for values in observations
+        if values["sku"] == "sku-negro" and values["seller_id"] == "1"
+    )
+
+    assert "membership_price" in own.quality_flags
+    assert "conditional_promotion_price" in own.quality_flags
 
 
 def test_parser_suppresses_unavailable_sentinel_prices() -> None:

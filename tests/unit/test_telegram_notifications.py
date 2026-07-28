@@ -57,6 +57,54 @@ def test_offer_notification_normalizes_values_and_rejects_float_money() -> None:
         make_notification(current_price=179.0)
 
 
+def test_offer_notification_normalizes_and_deduplicates_conditions() -> None:
+    notification = make_notification(
+        conditions=[
+            "  requiere un cupón  ",
+            "requiere un cupón",
+            "precio exclusivo para socios",
+        ]
+    )
+
+    assert notification.conditions == (
+        "requiere un cupón",
+        "precio exclusivo para socios",
+    )
+
+
+@pytest.mark.parametrize(
+    "conditions",
+    [
+        "requiere un cupón",
+        ("condición válida", 42),
+        ["  "],
+    ],
+)
+def test_offer_notification_rejects_invalid_conditions(conditions: object) -> None:
+    with pytest.raises((TypeError, ValueError), match="conditions"):
+        make_notification(conditions=conditions)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("confidence_score", -1, "confidence_score"),
+        ("confidence_score", 101, "confidence_score"),
+        ("confidence_score", True, "confidence_score"),
+        ("confirmation_count", 0, "confirmation_count"),
+        ("confirmation_count", -1, "confirmation_count"),
+        ("confirmation_count", True, "confirmation_count"),
+    ],
+)
+def test_offer_notification_rejects_invalid_phase3_metadata(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        make_notification(**{field: value})
+
+
 def test_rendered_message_explains_offer_and_escapes_dynamic_html() -> None:
     message = render_telegram_message(make_notification())
 
@@ -67,7 +115,36 @@ def test_rendered_message_explains_offer_and_escapes_dynamic_html() -> None:
     assert "mínimo histórico" in message
     assert "Coolbox &amp; Perú" in message
     assert 'href="https://www.coolbox.pe/producto?a=1&amp;b=2"' in message
+    assert "<b>Condiciones:</b>" not in message
     assert len(message) <= 4096
+
+
+def test_rendered_message_shows_conditions_and_escapes_their_html() -> None:
+    message = render_telegram_message(
+        make_notification(
+            conditions=(
+                "precio con tarjeta <Oh!>",
+                'requiere cupón "VERANO" & membresía',
+            )
+        )
+    )
+
+    assert (
+        "<b>Condiciones:</b> precio con tarjeta &lt;Oh!&gt;; "
+        "requiere cupón &quot;VERANO&quot; &amp; membresía"
+    ) in message
+
+
+def test_rendered_message_includes_confidence_and_confirmation_evidence() -> None:
+    notification = make_notification(confidence_score=85, confirmation_count=3)
+
+    assert notification.confidence_score == 85
+    assert notification.confirmation_count == 3
+
+    message = render_telegram_message(notification)
+
+    assert "<b>Confianza:</b> 85/100" in message
+    assert "<b>Confirmaciones:</b> 3 observaciones" in message
 
 
 def test_send_uses_official_https_endpoint_and_expected_payload() -> None:

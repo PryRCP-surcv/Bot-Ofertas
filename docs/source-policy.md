@@ -28,11 +28,16 @@ integración permanezca activa.
 - No usar proxies rotativos, cambios de identidad ni resolución de CAPTCHA.
 - Conservar SKU, vendedor, variante, condición, disponibilidad, moneda, precio
   total y precio de lista.
-- Guardar las cuotas separadas del precio total. Una cuota nunca sustituye al
-  precio del producto.
-- Guardar las cuotas en su estructura separada. Las promociones condicionadas
-  a tarjeta, cupón, membresía, cantidad o medio de pago se marcan con un flag
-  bloqueante y no se usan para una alerta general.
+- Guardar las cuotas en su estructura separada. Una cuota individual nunca
+  sustituye al precio total del producto.
+- Marcar tarjeta o medio de pago, membresía, cupón, cantidad mínima y promoción
+  como condiciones informativas. Pueden generar una alerta, pero deben mostrarse
+  claramente y coincidir, mediante una huella exacta y opaca, entre las dos
+  observaciones de confirmación.
+- Mantener limpias las referencias históricas y equivalentes generales: solo
+  observaciones sin flags de calidad forman esas referencias.
+- Bloquear problemas de identidad, vendedor, variante, ubicación, base de
+  precio, moneda, precio o stock, además de cualquier flag desconocido.
 - Tratar cada combinación SKU + vendedor como una oferta independiente. Un
   vendedor tercero se marca como marketplace y no se mezcla con la tienda.
 - Las alertas son indicios. Ninguna alerta garantiza stock, disponibilidad,
@@ -78,8 +83,9 @@ Los dos pilotos deben cumplir todas estas condiciones:
    local debe verificarse en la ficha antes de actuar sobre una alerta.
 4. Reconocer como vendedor propio únicamente `sellerId=1` junto con la identidad
    esperada de la tienda. Cualquier inconsistencia se marca como ambigua.
-5. Guardar vendedores marketplace y cuotas por separado; marcar promociones
-   condicionadas con un flag bloqueante, sin convertirlas en una oferta general.
+5. Guardar vendedores marketplace y cuotas por separado; marcar las condiciones
+   comerciales como informativas, mostrarlas en la alerta y exigir la misma
+   familia en ambas observaciones de confirmación.
 6. Verificar SKU, variante, unidad de venta, condición, disponibilidad, precio
    total y precio de lista mediante fixtures.
 7. Repetir las pruebas automatizadas y un *smoke test* de una sola URL ante
@@ -106,9 +112,10 @@ puede cambiar por:
 - condición nueva, reacondicionada o reconstruida;
 - promociones ligadas al medio de pago.
 
-Integrarla antes de representar esos datos produciría falsos positivos. La
-decisión se revisará cuando el detector pueda exigir una base de precio,
-ubicación, vendedor y condición equivalentes.
+Aunque `phase3-v2` ya muestra las condiciones comerciales, integrar plazaVea
+antes de representar correctamente peso, sustituciones, ubicación, vendedor y
+condición produciría falsos positivos. La decisión se revisará cuando todas esas
+dimensiones puedan verificarse de forma equivalente.
 
 ## Revisión antes de ampliar o desplegar
 
@@ -117,8 +124,8 @@ ubicación, vendedor y condición equivalentes.
 3. Ejecutar fixtures y pruebas unitarias sin depender del sitio vivo.
 4. Ejecutar un único *smoke test* con los límites de
    [operación de la Fase 2](phase2-operations.md).
-5. Revisar vendedor, moneda, cuota, promociones condicionadas, variante,
-   condición, disponibilidad y flags de calidad.
+5. Revisar vendedor, moneda, cuota, condiciones comerciales mostradas, variante,
+   condición, disponibilidad y flags bloqueantes.
 6. Añadir un contacto válido al `User-Agent` antes de operar permanentemente.
 7. Solicitar confirmación escrita cuando exista un canal para feeds o
    integraciones.

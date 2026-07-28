@@ -26,6 +26,9 @@ class DetectionBatchSummary:
     rejected: int = 0
     no_deal: int = 0
     alert_candidates: int = 0
+    awaiting_confirmation: int = 0
+    confirmed_candidates: int = 0
+    low_confidence_suppressed: int = 0
     notifications_reserved: int = 0
     duplicates_suppressed: int = 0
 
@@ -45,13 +48,19 @@ class DetectionService:
 
     def process_new(self, *, limit: int = 100) -> DetectionBatchSummary:
         repository = DetectionRepository(self._session)
-        observations = repository.unprocessed_observations(limit=limit)
+        observations = repository.unprocessed_observations(
+            detector_version=self._settings.detector_version,
+            limit=limit,
+        )
         counters = {
             "processed": 0,
             "processing_errors": 0,
             "rejected": 0,
             "no_deal": 0,
             "alert_candidates": 0,
+            "awaiting_confirmation": 0,
+            "confirmed_candidates": 0,
+            "low_confidence_suppressed": 0,
             "notifications_reserved": 0,
             "duplicates_suppressed": 0,
         }
@@ -62,31 +71,72 @@ class DetectionService:
                     history_records = repository.history_before(
                         record,
                         limit=self._settings.detection_history_limit,
+                        max_age_days=self._settings.detection_history_days,
+                    )
+                    historical_minimum = repository.lifetime_minimum_before(record)
+                    equivalent_records = repository.equivalent_observations_before(
+                        record,
+                        max_age_hours=self._settings.equivalent_max_age_hours,
+                        limit=self._settings.equivalent_limit,
+                    )
+                    ambiguous_variants = (
+                        tracked_product is not None
+                        and not tracked_product.expected_variant
+                        and repository.has_ambiguous_variants(record)
                     )
                     current = _domain_observation(record)
                     history = [_domain_observation(item) for item in history_records]
                     decision = self._detector.evaluate(
                         current,
                         history,
-                        expected=_expected_context(record, tracked_product),
+                        expected=_expected_context(
+                            record,
+                            tracked_product,
+                            variant_selection_required=ambiguous_variants,
+                        ),
+                        historical_minimum=historical_minimum,
+                        equivalent_prices=(
+                            item.price for item in equivalent_records if item.price is not None
+                        ),
                     )
                     if decision.is_valid:
                         _learn_first_variant(tracked_product, record)
+                    confirmation_interval_minutes = (
+                        tracked_product.check_interval_minutes
+                        if tracked_product is not None
+                        else 30
+                    )
+                    confirmation_max_age_minutes = max(
+                        self._settings.confirmation_max_age_minutes,
+                        confirmation_interval_minutes * 2,
+                    )
                     result = repository.save(
                         observation=record,
                         decision=decision,
-                        cooldown=timedelta(
-                            hours=self._settings.alert_cooldown_hours
-                        ),
+                        detector_version=self._settings.detector_version,
+                        cooldown=timedelta(hours=self._settings.alert_cooldown_hours),
                         significant_improvement_ratio=(
                             self._settings.alert_significant_improvement_ratio
                         ),
+                        confirmation_required=self._settings.confirmation_required,
+                        confirmation_minimum_interval=timedelta(
+                            minutes=confirmation_interval_minutes
+                        ),
+                        confirmation_max_age=timedelta(minutes=confirmation_max_age_minutes),
+                        confirmation_price_tolerance_ratio=(
+                            self._settings.confirmation_price_tolerance_ratio
+                        ),
+                        confirmation_confidence_bonus=(
+                            self._settings.confirmation_confidence_bonus
+                        ),
+                        minimum_alert_confidence=(self._settings.minimum_alert_confidence),
                         allow_notification=repository.is_latest_snapshot(record),
                     )
             except Exception as error:
                 with self._session.begin_nested():
                     result = repository.save_processing_error(
                         observation=record,
+                        detector_version=self._settings.detector_version,
                         error_type=type(error).__name__,
                     )
                 if result.inserted:
@@ -102,8 +152,16 @@ class DetectionService:
                 counters["no_deal"] += 1
             else:
                 counters["alert_candidates"] += 1
+                if result.confirmation_pending:
+                    counters["awaiting_confirmation"] += 1
+                if result.confirmed:
+                    counters["confirmed_candidates"] += 1
                 if result.notification_reserved:
                     counters["notifications_reserved"] += 1
+                elif result.low_confidence_suppressed:
+                    counters["low_confidence_suppressed"] += 1
+                elif result.confirmation_pending:
+                    pass
                 else:
                     counters["duplicates_suppressed"] += 1
         return DetectionBatchSummary(**counters)
@@ -113,17 +171,15 @@ def _learn_first_variant(
     tracked_product: TrackedProduct | None,
     observation: PriceObservationRecord,
 ) -> None:
-    if (
-        tracked_product is not None
-        and not tracked_product.expected_variant
-        and observation.variant
-    ):
+    if tracked_product is not None and not tracked_product.expected_variant and observation.variant:
         tracked_product.expected_variant = canonicalize_variant(observation.variant)
 
 
 def _expected_context(
     observation: PriceObservationRecord,
     tracked_product: TrackedProduct | None,
+    *,
+    variant_selection_required: bool = False,
 ) -> ExpectedProductContext:
     return ExpectedProductContext(
         store_slug=observation.store_slug,
@@ -132,16 +188,11 @@ def _expected_context(
         seller_id=observation.seller_id,
         brand=tracked_product.expected_brand if tracked_product is not None else None,
         model=tracked_product.expected_model if tracked_product is not None else None,
-        variant=(
-            dict(tracked_product.expected_variant)
-            if tracked_product is not None
-            else {}
-        ),
+        variant=(dict(tracked_product.expected_variant) if tracked_product is not None else {}),
         expected_is_accessory=(
-            tracked_product.expected_is_accessory
-            if tracked_product is not None
-            else False
+            tracked_product.expected_is_accessory if tracked_product is not None else False
         ),
+        variant_selection_required=variant_selection_required,
     )
 
 

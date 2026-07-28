@@ -36,7 +36,7 @@ def _load_fixture(name: str) -> list[dict]:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
-def test_phase2_parsers_persist_and_block_unverified_prices_before_alerting() -> None:
+def test_phase2_parsers_allow_disclosed_conditions_but_block_unverified_context() -> None:
     engine = create_database_engine(DatabaseSettings.from_env())
     connection = engine.connect()
     transaction = connection.begin()
@@ -71,12 +71,11 @@ def test_phase2_parsers_persist_and_block_unverified_prices_before_alerting() ->
             if values["sku"] == "sku-blanco" and values["seller_id"] == "1"
         )
         assert "conditional_promotion_price" in oechsle_values["quality_flags"]
-        saved_ids.append(
-            observations.save(
-                run_id=oechsle_run.id,
-                observation=PriceObservation(**oechsle_values),
-            ).observation_id
-        )
+        oechsle_observation_id = observations.save(
+            run_id=oechsle_run.id,
+            observation=PriceObservation(**oechsle_values),
+        ).observation_id
+        saved_ids.append(oechsle_observation_id)
 
         promart_url = "https://www.promart.pe/producto-demo-promart/p"
         promart_product = products.add(
@@ -102,38 +101,41 @@ def test_phase2_parsers_persist_and_block_unverified_prices_before_alerting() ->
         )
         assert "location_context_unverified" in promart_values["quality_flags"]
         assert "unsupported_price_basis" not in promart_values["quality_flags"]
-        saved_ids.append(
-            observations.save(
-                run_id=promart_run.id,
-                observation=PriceObservation(**promart_values),
-            ).observation_id
-        )
+        promart_observation_id = observations.save(
+            run_id=promart_run.id,
+            observation=PriceObservation(**promart_values),
+        ).observation_id
+        saved_ids.append(promart_observation_id)
 
         summary = DetectionService(
             session,
             RuntimeSettings(
-                detector_config=DetectorConfig(minimum_history_samples=1)
+                confirmation_required=False,
+                minimum_alert_confidence=0,
+                detector_config=DetectorConfig(minimum_history_samples=1),
             ),
         ).process_new(limit=10)
-        detections = list(
-            session.scalars(
-                select(DealDetection).where(
-                    DealDetection.observation_id.in_(saved_ids)
-                )
+        detections = {
+            detection.observation_id: detection
+            for detection in session.scalars(
+                select(DealDetection).where(DealDetection.observation_id.in_(saved_ids))
             )
-        )
+        }
 
         assert summary.processing_errors == 0
         assert len(detections) == 2
-        assert all(detection.classification == "none" for detection in detections)
-        assert all(
-            "quality_flags_present" in detection.rejection_reasons
-            for detection in detections
-        )
-        assert all(
-            detection.notification_status == "not_applicable"
-            for detection in detections
-        )
+        oechsle_detection = detections[oechsle_observation_id]
+        assert oechsle_detection.classification == "good_deal"
+        assert oechsle_detection.rejection_reasons == []
+        assert oechsle_detection.notification_status == "pending"
+        assert oechsle_detection.metrics["quality_flags"]["commercial_condition_families"] == [
+            "payment_method"
+        ]
+
+        promart_detection = detections[promart_observation_id]
+        assert promart_detection.classification == "none"
+        assert "quality_flags_present" in promart_detection.rejection_reasons
+        assert promart_detection.notification_status == "not_applicable"
     finally:
         session.close()
         transaction.rollback()

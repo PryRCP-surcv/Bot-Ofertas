@@ -101,9 +101,21 @@ defecto, reconocimiento estricto del vendedor propio y una función de flags de
 calidad. La moneda por defecto solo se aplica cuando el catálogo omite el campo:
 una moneda explícita de tres letras se conserva para que el detector pueda
 rechazarla si no es PEN, y un código explícito inválido genera
-`invalid_currency_code`. Las reglas de ubicación, unidad de venta, promociones
-condicionadas o identidad ambigua permanecen en el wrapper de la tienda y deben
-producir flags bloqueantes cuando no puedan verificarse.
+`invalid_currency_code`. Las reglas de ubicación, unidad de venta, condiciones
+comerciales o identidad ambigua permanecen en el wrapper de la tienda.
+
+La integración debe distinguir dos clases de flags:
+
+- Tarjeta o medio de pago, membresía, cupón, cantidad mínima y promoción son
+  condiciones informativas. No bloquean por sí solas, se muestran en las alertas
+  y forman parte de la identidad de confirmación.
+- Identidad o vendedor dudoso, ubicación sin verificar, base de precio
+  incompatible, moneda, precio o stock inválidos y flags desconocidos son
+  bloqueantes.
+
+Una cuota individual siempre se guarda en `installments` y nunca puede ocupar
+`price`. Las referencias históricas y equivalentes generales deben continuar
+usando observaciones limpias, sin flags de calidad.
 
 ## 3. Registrar la integración
 
@@ -138,6 +150,7 @@ representativos como fixtures, eliminando datos que no sean necesarios, y cubre:
 - producto normal y múltiples variantes;
 - precio total separado de cuotas;
 - precio de lista y descuento;
+- precios condicionados a tarjeta, membresía, cupón, cantidad mínima y promoción;
 - múltiples vendedores y marketplace;
 - agotados y cantidades centinela;
 - accesorios, reacondicionados o caja abierta cuando existan;
@@ -164,7 +177,9 @@ RUN_POSTGRES_TESTS=1 uv run pytest -q -p no:cacheprovider
 3. Registra una sola URL pública de prueba.
 4. Ejecuta una consulta controlada y revisa `crawl_runs`,
    `price_observations` y los contadores de error.
-5. Verifica que cuotas, variantes, vendedores y condiciones no se mezclen.
+5. Verifica que cuotas, variantes, vendedores y condiciones no se mezclen, y
+   que una segunda observación conserve la misma familia y huella comercial
+   exacta. Los parsers VTEX compartidos ya generan esa huella.
 6. Aumenta productos y frecuencia gradualmente sin superar los límites de la
    fuente.
 
@@ -194,4 +209,5 @@ integración verificable.
 El detector, el scheduler, la deduplicación y Telegram ya forman parte del flujo
 común. Al habilitar un adapter compatible, sus observaciones alimentan esos
 módulos sin modificar el núcleo. Esto no elimina la revisión específica de
-precios condicionados, variantes, vendedores y casos límite de cada tienda.
+precios condicionados, variantes, vendedores y casos límite de cada tienda; las
+condiciones reconocidas deben llegar a la alerta con una etiqueta comprensible.

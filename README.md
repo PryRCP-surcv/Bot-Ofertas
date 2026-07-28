@@ -6,7 +6,7 @@ ofertas excepcionales y posibles errores de precio sin realizar compras.
 
 ## Estado actual
 
-Las Fases 1 y 2 están implementadas y probadas en ejecución local:
+Las Fases 1, 2 y 3 están implementadas para ejecución local:
 
 1. Se registra una URL pública de producto.
 2. El registro de tiendas reconoce el dominio, elige el adapter habilitado y
@@ -16,11 +16,17 @@ Las Fases 1 y 2 están implementadas y probadas en ejecución local:
 5. Cada combinación SKU + vendedor se normaliza de forma independiente.
 6. Un pipeline común valida el resultado y PostgreSQL conserva la ejecución y
    la observación de precio.
-7. El detector compara precio anterior, mediana, mínimo histórico y precio de
-   lista, conservando señales y motivos.
-8. Una capa persistente elimina alertas repetidas y aplica reintentos.
-9. Telegram recibe las ofertas cuando sus credenciales están configuradas.
-10. Un scheduler local ejecuta el ciclo completo sin solapar corridas.
+7. El detector `phase3-v2` compara precio anterior, medianas de 7, 30 y 90
+   días, mínimo histórico, precio de lista y equivalentes verificados.
+8. La severidad y la confianza se calculan por separado, y cada decisión
+   conserva sus señales, muestras y motivos.
+9. Una primera detección queda esperando confirmación. Solo una observación
+   independiente, obtenida en otra ejecución después del intervalo del producto,
+   puede confirmarla.
+10. Una capa persistente elimina alertas repetidas y aplica reintentos.
+11. Telegram recibe las ofertas confirmadas cuando sus credenciales están
+    configuradas.
+12. Un scheduler local ejecuta el ciclo completo sin solapar corridas.
 
 La primera prueba de la Fase 1 guardó correctamente una barra de sonido a
 `PEN 179.00`, con precio de lista `PEN 499.00`, disponibilidad y vendedor.
@@ -34,9 +40,11 @@ manualmente, un mínimo de 60 minutos y un máximo de 5 URLs por tienda y corrid
 Comparten un parser VTEX reutilizable, pero conservan política, dominios,
 vendedores, fixtures y pruebas propios.
 
-El detector, la deduplicación, Telegram y el scheduler ya están implementados.
-La siguiente fase mejorará la precisión y la confirmación de candidatos. Aún no
-existen dashboard web, WhatsApp, Gmail ni despliegue permanente en un servidor.
+El detector de Fase 3, la confirmación, la deduplicación, Telegram y el scheduler
+ya están implementados. Las equivalencias entre tiendas son grupos creados y
+verificados manualmente: deben representar la misma marca, modelo y variante, y
+admiten como máximo una publicación por tienda. Aún no existen dashboard web,
+WhatsApp, Gmail ni despliegue permanente en un servidor.
 
 Telegram es actualmente un canal de salida: envía alertas, pero todavía no
 responde `/start`, `/ofertas`, `Hola` ni otros comandos. El monitoreo continuo
@@ -73,10 +81,13 @@ uv sync --locked
 uv run bot-ofertas db upgrade
 ```
 
+El head actual de migraciones es `0008_conditioned_offers`.
+
 Comprueba el estado:
 
 ```bash
 docker compose ps
+uv run bot-ofertas config show
 uv run bot-ofertas store list
 uv run bot-ofertas product list
 uv run bot-ofertas history
@@ -140,13 +151,18 @@ resultados:
 ```bash
 uv run bot-ofertas history --limit 20
 uv run bot-ofertas alert list --limit 20
+uv run bot-ofertas confirmation list --limit 20
 ```
 
 Existe `crawl --force` para pruebas manuales, pero no debe usarse repetidamente.
 El límite por ejecución es 20 URLs y el intervalo mínimo aceptado es 30 minutos.
+`crawl --force` no permite confirmar una candidata antes del intervalo configurado
+para el producto.
 
 La guía completa de configuración, Telegram, estados, deduplicación y
 recuperación está en [Operación de la Fase 1](docs/phase1-operations.md).
+La selección de variantes, equivalencias, confianza y segunda comprobación está
+en [Operación de la Fase 3](docs/phase3-operations.md).
 
 Detener PostgreSQL sin perder el historial:
 
@@ -194,7 +210,10 @@ URL registrada
   -> validación PriceObservation
   -> pipeline PostgreSQL común
   -> historial inmutable
-  -> DealDetector puro
+  -> DealDetector phase3-v2
+  -> evidencia histórica y equivalentes verificados
+  -> puntuación de confianza
+  -> confirmación en otra ejecución
   -> deduplicación persistente
   -> delivery Telegram con lease y backoff
 ```
@@ -229,15 +248,29 @@ Tablas:
 - `crawl_runs`: auditoría de cada ejecución, estado y errores.
 - `price_observations`: historial inmutable de precio, precio de lista, cuotas,
   variante, vendedor, condición y disponibilidad.
-- `deal_detections`: decisión, puntuación, señales, referencias y descartes por
-  observación.
+- `equivalent_product_groups` y `equivalent_product_memberships`: equivalencias
+  entre publicaciones verificadas manualmente.
+- `deal_detections`: decisión versionada, severidad, confianza, señales,
+  referencias, confirmación y descartes por observación.
+- `offer_confirmation_states`: candidatas que esperan una segunda observación
+  independiente.
 - `offer_alert_states`: ventana de deduplicación por oferta exacta.
 - `notification_deliveries`: entregas Telegram, leases, intentos y errores
   sanitizados.
 
-El precio total y las cuotas son campos distintos. Un SKU agotado puede conservar
-su estado, pero su precio centinela se descarta. Los vendedores marketplace nunca
-se mezclan con el vendedor propio.
+El precio total y las cuotas son campos distintos: una cuota individual nunca se
+usa como precio total. Las condiciones de tarjeta o medio de pago, membresía,
+cupón, cantidad mínima y promoción son informativas y aparecen en la CLI y en
+Telegram; no bloquean por sí solas. Las dos observaciones que confirman una
+oferta deben conservar tanto la misma familia como la misma huella opaca de la
+condición exacta publicada. Así, por ejemplo, dos tarjetas o cupones distintos
+no pueden confirmarse entre sí. Las referencias históricas y equivalentes
+generales permanecen limpias, sin flags de calidad.
+
+Sí bloquean una alerta los problemas de identidad, vendedor, variante,
+ubicación, base de precio, moneda, precio o stock, además de cualquier flag
+desconocido. Un SKU agotado conserva su estado, pero su precio se descarta. Los
+vendedores marketplace nunca se mezclan con el vendedor propio.
 
 Para integrar otra tienda, consulta [Cómo añadir una tienda](docs/adding-a-store.md).
 La operación y límites actuales están en
@@ -284,9 +317,17 @@ Después se debe reemplazar la contraseña de ejemplo por una larga y aleatoria.
 exclusivamente a `.env`, que no debe ejecutarse con `source`, publicarse ni
 mostrarse en capturas.
 
+Para comprobar qué política quedó activa sin revelar el token ni el chat de
+Telegram:
+
+```bash
+uv run bot-ofertas config show
+```
+
 ## Siguientes hitos
 
-La Fase 3 mejorará medianas de 7, 30 y 90 días, puntuación de confianza,
-comparación de equivalentes y segunda comprobación antes de alertar. Después
-vendrán la API y el panel de administración. WhatsApp y correo serán canales
-adicionales sobre el mismo contrato de notificaciones.
+La Fase 4 incorporará una API y un panel de administración para gestionar
+productos, tiendas, umbrales, historial y alertas. Después vendrán el
+descubrimiento controlado de productos y el escalamiento con colas y varios
+workers. WhatsApp y correo serán canales adicionales sobre el mismo contrato de
+notificaciones.

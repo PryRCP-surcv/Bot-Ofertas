@@ -180,6 +180,10 @@ pendientes.
 
 ## 6. Cómo decide
 
+Esta sección conserva la explicación del detector inicial. La política vigente,
+incluidas las ventanas, confianza, condiciones comerciales y confirmación, está
+en [Operación de la Fase 3](phase3-operations.md).
+
 La política predeterminada clasifica una reducción como:
 
 - `good_deal`: 20 % o más.
@@ -210,8 +214,14 @@ No se alerta cuando:
 - el precio coincide con una cuota;
 - la oferta pertenece a marketplace;
 - la condición no es nueva;
-- hay flags de calidad;
+- hay un flag bloqueante o desconocido;
 - la marca, modelo, variante o tipo accesorio no coinciden.
+
+Los indicadores de tarjeta o medio de pago, membresía, cupón, cantidad mínima y
+promoción son condiciones informativas en `phase3-v2`: se muestran en la alerta
+y no la bloquean por sí solos. Deben repetirse en la segunda observación de
+confirmación. Una cuota individual permanece separada y nunca se usa como precio
+total.
 
 Las comparaciones históricas se limitan al mismo producto rastreado, tienda,
 producto externo, SKU, vendedor, variante, condición y moneda.
@@ -219,8 +229,9 @@ producto externo, SKU, vendedor, variante, condición y moneda.
 ## 7. Deduplicación y reintentos
 
 La identidad de deduplicación incluye canal, producto, tienda, SKU, vendedor,
-variante, condición y moneda. Durante 24 horas no se repite una alerta
-equivalente, salvo que:
+variante, condición, moneda, las familias comerciales y una huella opaca de sus
+condiciones exactas. Durante 24 horas no se repite una alerta equivalente,
+salvo que:
 
 - aumente la severidad; o
 - el precio baje otro 5 % como mínimo.
@@ -239,8 +250,10 @@ reconocer ese caso.
 Todos estos valores son opcionales y aparecen documentados en `.env.example`:
 
 ```dotenv
+BOT_DETECTOR_VERSION=phase3-v2
 BOT_SCHEDULER_POLL_SECONDS=300
-BOT_DETECTION_HISTORY_LIMIT=90
+BOT_DETECTION_HISTORY_LIMIT=2500
+BOT_DETECTION_HISTORY_DAYS=90
 BOT_DETECTION_MIN_HISTORY_SAMPLES=3
 BOT_DEAL_GOOD_PERCENT=20
 BOT_DEAL_EXCEPTIONAL_PERCENT=40

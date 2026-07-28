@@ -23,10 +23,31 @@ from bot_ofertas.storage.notifications import (
 
 _REASON_LABELS = {
     "previous_price": "caída frente al precio anterior",
-    "historical_median": "caída frente a la mediana histórica",
+    "median_7d": "caída frente a la mediana de 7 días",
+    "median_30d": "caída frente a la mediana de 30 días",
+    "historical_median": "caída frente a la mediana de 90 días",
+    "equivalent_median": "caída frente a productos equivalentes",
     "historical_minimum": "nuevo mínimo histórico",
     "list_price": "descuento frente al precio de lista",
 }
+_CONDITION_LABELS = {
+    "conditional_card_price": "precio condicionado a tarjeta o medio de pago",
+    "conditional_payment_method_price": "precio condicionado a tarjeta o medio de pago",
+    "payment_method_price": "precio condicionado a tarjeta o medio de pago",
+    "card_only_price": "precio condicionado a tarjeta o medio de pago",
+    "tarjeta_only_price": "precio condicionado a tarjeta o medio de pago",
+    "conditional_membership_price": "precio exclusivo para miembros o socios",
+    "membership_price": "precio exclusivo para miembros o socios",
+    "membership_only_price": "precio exclusivo para miembros o socios",
+    "conditional_coupon_price": "requiere un cupón",
+    "coupon_price": "requiere un cupón",
+    "coupon_only_price": "requiere un cupón",
+    "conditional_quantity_price": "requiere una cantidad mínima de compra",
+    "minimum_quantity_price": "requiere una cantidad mínima de compra",
+    "quantity_tier_price": "requiere una cantidad mínima de compra",
+    "conditional_promotion_price": "promoción con condiciones adicionales",
+}
+_GENERIC_CONDITION_FLAG = "conditional_promotion_price"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,9 +88,7 @@ class NotificationDispatcher:
                     channel=self._channel.channel_name,
                     limit=1,
                     max_attempts=self._settings.notification_max_attempts,
-                    lease_duration=timedelta(
-                        seconds=self._settings.notification_lease_seconds
-                    ),
+                    lease_duration=timedelta(seconds=self._settings.notification_lease_seconds),
                 )
             if not claims:
                 break
@@ -101,14 +120,8 @@ class NotificationDispatcher:
                     lease_token=claim.lease_token,
                     sent=result.sent,
                     max_attempts=self._settings.notification_max_attempts,
-                    retry_base_seconds=(
-                        self._settings.notification_retry_base_seconds
-                    ),
-                    retryable=(
-                        result.retryable
-                        if result.retryable is not None
-                        else True
-                    ),
+                    retry_base_seconds=(self._settings.notification_retry_base_seconds),
+                    retryable=(result.retryable if result.retryable is not None else True),
                     retry_after_seconds=result.retry_after_seconds,
                     provider_message_id=result.message_id,
                     error_code=result.status.value if not result.sent else None,
@@ -144,6 +157,9 @@ def _notification(claim: NotificationClaim) -> OfferNotification:
         discount_percent=claim.discount_percent,
         store_name=claim.store_slug,
         comparison_label=claim.comparison_label,
+        confidence_score=claim.confidence_score,
+        confirmation_count=claim.confirmation_count,
+        conditions=_conditions(claim.condition_flags),
     )
 
 
@@ -155,6 +171,24 @@ def _reason(reason_codes: tuple[str, ...]) -> str:
         if label not in labels:
             labels.append(label)
     return "; ".join(labels) if labels else "reducción anormal detectada"
+
+
+def _conditions(condition_flags: tuple[str, ...]) -> tuple[str, ...]:
+    normalized_flags = tuple(
+        dict.fromkeys(flag.strip().casefold() for flag in condition_flags if flag.strip())
+    )
+    has_specific_condition = any(
+        flag in _CONDITION_LABELS and flag != _GENERIC_CONDITION_FLAG for flag in normalized_flags
+    )
+
+    labels: list[str] = []
+    for flag in normalized_flags:
+        if flag == _GENERIC_CONDITION_FLAG and has_specific_condition:
+            continue
+        label = _CONDITION_LABELS.get(flag)
+        if label is not None and label not in labels:
+            labels.append(label)
+    return tuple(labels)
 
 
 __all__ = [

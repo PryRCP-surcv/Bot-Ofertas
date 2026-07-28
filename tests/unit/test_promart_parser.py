@@ -64,11 +64,7 @@ def test_url_rejects_unsafe_or_non_product_targets(url: str) -> None:
 
 def test_parser_separates_sku_seller_variant_and_installments() -> None:
     observations = parse_fixture()
-    own = next(
-        item
-        for item in observations
-        if item.sku == "sku-negro" and item.seller_id == "1"
-    )
+    own = next(item for item in observations if item.sku == "sku-negro" and item.seller_id == "1")
     marketplace = next(item for item in observations if item.seller_id == "market-7")
 
     assert len(observations) == 4
@@ -95,6 +91,7 @@ def test_parser_marks_conditioned_promotion_as_blocking_quality_flag() -> None:
     assert conditioned.price == Decimal("149")
     assert conditioned.installments[0].amount == Decimal("24.833333")
     assert conditioned.price != conditioned.installments[0].amount
+    assert "payment_method_price" in conditioned.quality_flags
     assert "conditional_promotion_price" in conditioned.quality_flags
 
 
@@ -183,11 +180,10 @@ def test_parser_also_marks_standard_vtex_teasers() -> None:
         observed_at=datetime(2026, 7, 28, 12, 0, tzinfo=UTC),
     )
     conditioned = next(
-        PriceObservation(**values)
-        for values in observations
-        if values["sku"] == "sku-blanco"
+        PriceObservation(**values) for values in observations if values["sku"] == "sku-blanco"
     )
 
+    assert "payment_method_price" in conditioned.quality_flags
     assert "conditional_promotion_price" in conditioned.quality_flags
 
 

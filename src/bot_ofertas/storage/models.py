@@ -184,6 +184,112 @@ class TrackedProduct(Base):
         back_populates="tracked_product",
         passive_deletes=True,
     )
+    equivalence_membership: Mapped[EquivalentProductMembership | None] = relationship(
+        back_populates="tracked_product",
+        passive_deletes=True,
+        uselist=False,
+    )
+
+
+class EquivalentProductGroup(Base):
+    """A manually verified cross-store identity for one exact product variant."""
+
+    __tablename__ = "equivalent_product_groups"
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_equivalent_product_groups_name"),
+        CheckConstraint("name <> ''", name="ck_equivalent_product_groups_name_non_empty"),
+        CheckConstraint("brand <> ''", name="ck_equivalent_product_groups_brand_non_empty"),
+        CheckConstraint("model <> ''", name="ck_equivalent_product_groups_model_non_empty"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    brand: Mapped[str] = mapped_column(String(200), nullable=False)
+    model: Mapped[str] = mapped_column(String(300), nullable=False)
+    canonical_variant: Mapped[dict[str, str]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+    active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.now(),
+    )
+
+    memberships: Mapped[list[EquivalentProductMembership]] = relationship(
+        back_populates="group",
+        passive_deletes=True,
+    )
+
+
+class EquivalentProductMembership(Base):
+    """Verified membership of one tracked listing in one equivalence group."""
+
+    __tablename__ = "equivalent_product_memberships"
+    __table_args__ = (
+        UniqueConstraint(
+            "tracked_product_id",
+            name="uq_equivalent_product_memberships_tracked_product",
+        ),
+        Index(
+            "ix_equivalent_product_memberships_group",
+            "group_id",
+        ),
+    )
+
+    group_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey(
+            "equivalent_product_groups.id",
+            name="fk_equivalent_product_memberships_group_id",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+    tracked_product_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey(
+            "tracked_products.id",
+            name="fk_equivalent_product_memberships_tracked_product_id",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+    verified_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+
+    group: Mapped[EquivalentProductGroup] = relationship(back_populates="memberships")
+    tracked_product: Mapped[TrackedProduct] = relationship(back_populates="equivalence_membership")
 
 
 class CrawlRun(Base):
@@ -387,8 +493,9 @@ class PriceObservationRecord(Base):
         back_populates="observations",
     )
 
-    detection: Mapped[DealDetection | None] = relationship(
+    detections: Mapped[list[DealDetection]] = relationship(
         back_populates="observation",
+        foreign_keys="DealDetection.observation_id",
         passive_deletes=True,
     )
 
@@ -400,11 +507,34 @@ class DealDetection(Base):
     __table_args__ = (
         UniqueConstraint(
             "observation_id",
-            name="uq_deal_detections_observation_id",
+            "detector_version",
+            name="uq_deal_detections_observation_version",
         ),
         CheckConstraint(
             "score >= 0 AND score <= 100",
             name="ck_deal_detections_score_range",
+        ),
+        CheckConstraint(
+            "detector_version <> ''",
+            name="ck_deal_detections_detector_version_non_empty",
+        ),
+        CheckConstraint(
+            "confidence_score >= 0 AND confidence_score <= 100",
+            name="ck_deal_detections_confidence_score_range",
+        ),
+        CheckConstraint(
+            "confidence_level IN ('none', 'low', 'medium', 'high')",
+            name="ck_deal_detections_confidence_level",
+        ),
+        CheckConstraint(
+            "confirmation_status IN "
+            "('not_applicable', 'not_required', 'awaiting', 'confirmed', "
+            "'expired', 'replaced')",
+            name="ck_deal_detections_confirmation_status",
+        ),
+        CheckConstraint(
+            "confirmation_count >= 0",
+            name="ck_deal_detections_confirmation_count_non_negative",
         ),
         CheckConstraint(
             "current_price IS NULL OR current_price >= 0",
@@ -415,14 +545,13 @@ class DealDetection(Base):
             name="ck_deal_detections_reference_price_non_negative",
         ),
         CheckConstraint(
-            "classification IN "
-            "('none', 'good_deal', 'exceptional_deal', 'possible_price_error')",
+            "classification IN ('none', 'good_deal', 'exceptional_deal', 'possible_price_error')",
             name="ck_deal_detections_classification",
         ),
         CheckConstraint(
             "notification_status IN "
-            "('not_applicable', 'pending', 'suppressed', 'retrying', "
-            "'sent', 'failed', 'superseded')",
+            "('not_applicable', 'awaiting_confirmation', 'pending', "
+            "'suppressed', 'retrying', 'sent', 'failed', 'superseded')",
             name="ck_deal_detections_notification_status",
         ),
         Index(
@@ -436,12 +565,16 @@ class DealDetection(Base):
             "detected_at",
         ),
         Index(
+            "ix_deal_detections_confirmation",
+            "confirmation_status",
+            "detected_at",
+            postgresql_where=text("confirmation_status = 'awaiting'"),
+        ),
+        Index(
             "ix_deal_detections_notification",
             "notification_status",
             "detected_at",
-            postgresql_where=text(
-                "notification_status IN ('pending', 'retrying')"
-            ),
+            postgresql_where=text("notification_status IN ('pending', 'retrying')"),
         ),
     )
 
@@ -455,6 +588,12 @@ class DealDetection(Base):
         ),
         nullable=False,
     )
+    detector_version: Mapped[str] = mapped_column(
+        String(40),
+        nullable=False,
+        default="phase3-v2",
+        server_default=text("'phase3-v2'"),
+    )
     tracked_product_id: Mapped[UUID | None] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
         ForeignKey(
@@ -467,13 +606,33 @@ class DealDetection(Base):
     classification: Mapped[str] = mapped_column(String(40), nullable=False)
     eligible: Mapped[bool] = mapped_column(Boolean, nullable=False)
     score: Mapped[int] = mapped_column(Integer, nullable=False)
+    confidence_score: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    confidence_level: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="none",
+        server_default=text("'none'"),
+    )
     current_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     reference_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     previous_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     median_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    median_price_7d: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    median_price_30d: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    median_price_90d: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     historical_min_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    equivalent_median_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     drop_from_previous_pct: Mapped[Decimal | None] = mapped_column(Numeric(9, 4))
     drop_from_median_pct: Mapped[Decimal | None] = mapped_column(Numeric(9, 4))
+    drop_from_median_7d_pct: Mapped[Decimal | None] = mapped_column(Numeric(9, 4))
+    drop_from_median_30d_pct: Mapped[Decimal | None] = mapped_column(Numeric(9, 4))
+    drop_from_median_90d_pct: Mapped[Decimal | None] = mapped_column(Numeric(9, 4))
+    drop_from_equivalent_pct: Mapped[Decimal | None] = mapped_column(Numeric(9, 4))
     list_discount_pct: Mapped[Decimal | None] = mapped_column(Numeric(9, 4))
     reasons: Mapped[list[str]] = mapped_column(
         JSONB,
@@ -499,6 +658,27 @@ class DealDetection(Base):
         default="not_applicable",
         server_default=text("'not_applicable'"),
     )
+    confirmation_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="not_applicable",
+        server_default=text("'not_applicable'"),
+    )
+    confirmation_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    confirmation_observation_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "price_observations.id",
+            name="fk_deal_detections_confirmation_observation_id",
+            ondelete="SET NULL",
+        ),
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     detected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -513,7 +693,13 @@ class DealDetection(Base):
         server_default=func.now(),
     )
 
-    observation: Mapped[PriceObservationRecord] = relationship(back_populates="detection")
+    observation: Mapped[PriceObservationRecord] = relationship(
+        back_populates="detections",
+        foreign_keys=[observation_id],
+    )
+    confirmation_observation: Mapped[PriceObservationRecord | None] = relationship(
+        foreign_keys=[confirmation_observation_id],
+    )
     deliveries: Mapped[list[NotificationDelivery]] = relationship(
         back_populates="detection",
         passive_deletes=True,
@@ -552,6 +738,93 @@ class OfferAlertState(Base):
     last_classification: Mapped[str | None] = mapped_column(String(40))
     last_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     last_reserved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.now(),
+    )
+
+
+class OfferConfirmationState(Base):
+    """Serialized evidence that an anomalous price survived independent crawls."""
+
+    __tablename__ = "offer_confirmation_states"
+    __table_args__ = (
+        CheckConstraint(
+            "candidate_price > 0",
+            name="ck_offer_confirmation_states_candidate_price_positive",
+        ),
+        CheckConstraint(
+            "confirmation_count >= 1",
+            name="ck_offer_confirmation_states_count_positive",
+        ),
+        CheckConstraint(
+            "last_seen_at >= first_seen_at",
+            name="ck_offer_confirmation_states_seen_order",
+        ),
+        CheckConstraint(
+            "expires_at > first_seen_at AND last_seen_at <= expires_at",
+            name="ck_offer_confirmation_states_expiry_order",
+        ),
+        CheckConstraint(
+            "candidate_classification IN ('good_deal', 'exceptional_deal', 'possible_price_error')",
+            name="ck_offer_confirmation_states_classification",
+        ),
+        Index(
+            "ix_offer_confirmation_states_tracked_product",
+            "tracked_product_id",
+        ),
+        Index(
+            "ix_offer_confirmation_states_expires",
+            "expires_at",
+        ),
+    )
+
+    offer_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tracked_product_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey(
+            "tracked_products.id",
+            name="fk_offer_confirmation_states_tracked_product_id",
+            ondelete="SET NULL",
+        ),
+    )
+    candidate_observation_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "price_observations.id",
+            name="fk_offer_confirmation_states_candidate_observation_id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    candidate_detection_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "deal_detections.id",
+            name="fk_offer_confirmation_states_candidate_detection_id",
+            ondelete="SET NULL",
+        ),
+    )
+    candidate_classification: Mapped[str] = mapped_column(String(40), nullable=False)
+    candidate_price: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    confirmation_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default=text("1"),
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

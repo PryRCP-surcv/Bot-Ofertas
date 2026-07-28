@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import unicodedata
 from collections.abc import Mapping
 from datetime import datetime
@@ -14,6 +13,7 @@ from bot_ofertas.crawling.vtex import (
     VtexParserConfig,
     VtexPayloadError,
     build_vtex_catalog_url,
+    conditional_vtex_price_flags,
     normalize_vtex_product_url,
     parse_vtex_products,
 )
@@ -22,30 +22,6 @@ OECHSLE_HOSTS = frozenset({"oechsle.pe", "www.oechsle.pe"})
 EXTRACTOR_VERSION = "oechsle-vtex-v1"
 _OWN_SELLER_ID = "1"
 _OWN_SELLER_NAME = "oechsle"
-_CONDITIONAL_PROMOTION_PATTERNS = (
-    re.compile(r"\btarjeta\s+oh\b"),
-    re.compile(r"\bpayment\s*system\b"),
-    re.compile(r"\bpayment\s*method\b"),
-    re.compile(r"\bsistema\s+de\s+pago\b"),
-    re.compile(r"\bmedio\s+de\s+pago\b"),
-    re.compile(r"\bmetodo\s+de\s+pago\b"),
-    re.compile(r"\bcoupon\b"),
-    re.compile(r"\bcupon\b"),
-    re.compile(r"\bmembresia\b"),
-    re.compile(r"\bmembership\b"),
-    re.compile(r"\bmin(?:imum)?\s*quantity\b"),
-    re.compile(r"\bcantidad\s+minima\b"),
-)
-_CONDITIONAL_METADATA_KEYS = (
-    "tarjeta",
-    "payment",
-    "pago",
-    "coupon",
-    "cupon",
-    "membres",
-    "cantidad minima",
-    "minimum quantity",
-)
 
 
 class OechslePayloadError(VtexPayloadError):
@@ -98,27 +74,11 @@ def _oechsle_offer_quality_flags(
     seller_id = _optional_text(seller.get("sellerId"))
     seller_name = _optional_text(seller.get("sellerName"))
     id_claims_own = seller_id == _OWN_SELLER_ID
-    name_claims_own = (
-        seller_name is not None and _searchable_text(seller_name) == _OWN_SELLER_NAME
-    )
+    name_claims_own = seller_name is not None and _searchable_text(seller_name) == _OWN_SELLER_NAME
     if id_claims_own != name_claims_own:
         flags.append("ambiguous_oechsle_seller_identity")
 
-    promotion_evidence: list[Any] = [
-        offer.get("Teasers"),
-        offer.get("teasers"),
-        offer.get("PromotionTeasers"),
-        offer.get("promotionTeasers"),
-    ]
-    for container in (product, item):
-        for key, value in container.items():
-            normalized_key = _searchable_text(key)
-            if any(marker in normalized_key for marker in _CONDITIONAL_METADATA_KEYS):
-                promotion_evidence.append({key: value})
-
-    searchable_evidence = _searchable_text(promotion_evidence)
-    if any(pattern.search(searchable_evidence) for pattern in _CONDITIONAL_PROMOTION_PATTERNS):
-        flags.append("conditional_promotion_price")
+    flags.extend(conditional_vtex_price_flags(product, item, seller, offer))
     return flags
 
 

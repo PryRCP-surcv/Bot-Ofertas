@@ -33,6 +33,23 @@ def _decimal(value: Decimal | int | str, field_name: str) -> Decimal:
     return normalized
 
 
+def _text_tuple(
+    value: tuple[str, ...] | list[str],
+    field_name: str,
+) -> tuple[str, ...]:
+    if not isinstance(value, (tuple, list)):
+        raise TypeError(f"{field_name} must be a tuple or list of strings")
+
+    normalized: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise TypeError(f"{field_name} must contain only strings")
+        text = _required_text(item, field_name)
+        if text not in normalized:
+            normalized.append(text)
+    return tuple(normalized)
+
+
 @dataclass(frozen=True, slots=True)
 class OfferNotification:
     """Channel-neutral data required to explain one detected offer."""
@@ -47,6 +64,9 @@ class OfferNotification:
     discount_percent: Decimal | None = None
     store_name: str | None = None
     comparison_label: str = "Precio de referencia"
+    confidence_score: int | None = None
+    confirmation_count: int | None = None
+    conditions: tuple[str, ...] | list[str] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -82,6 +102,23 @@ class OfferNotification:
             if discount > 100:
                 raise ValueError("discount_percent must not exceed 100")
             object.__setattr__(self, "discount_percent", discount)
+        if self.confidence_score is not None and (
+            isinstance(self.confidence_score, bool)
+            or not isinstance(self.confidence_score, int)
+            or not 0 <= self.confidence_score <= 100
+        ):
+            raise ValueError("confidence_score must be an integer between 0 and 100")
+        if self.confirmation_count is not None and (
+            isinstance(self.confirmation_count, bool)
+            or not isinstance(self.confirmation_count, int)
+            or self.confirmation_count < 1
+        ):
+            raise ValueError("confirmation_count must be a positive integer")
+        object.__setattr__(
+            self,
+            "conditions",
+            _text_tuple(self.conditions, "conditions"),
+        )
 
         parsed_url = urlsplit(self.product_url.strip())
         if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:

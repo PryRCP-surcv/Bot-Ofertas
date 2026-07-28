@@ -14,6 +14,7 @@ from bot_ofertas.crawling.vtex import (
     VtexParserConfig,
     VtexPayloadError,
     build_vtex_catalog_url,
+    conditional_vtex_price_flags,
     normalize_vtex_product_url,
     parse_vtex_products,
 )
@@ -23,25 +24,6 @@ EXTRACTOR_VERSION = "promart-vtex-v1"
 _OWN_SELLER_ID = "1"
 _OWN_SELLER_NAME = "promart"
 _FIXED_MEASUREMENT_UNITS = frozenset({"un", "unidad", "unit"})
-_PROMOTION_FIELDS = (
-    "Teasers",
-    "teasers",
-    "PromotionTeasers",
-    "promotionTeasers",
-)
-_CONDITIONAL_METADATA_MARKERS = (
-    "tarjeta oh",
-    "precio oh",
-    "precio tarjeta",
-    "promocion condicionada",
-    "conditional promotion",
-    "coupon",
-    "cupon",
-    "membresia",
-    "membership",
-    "cantidad minima",
-    "minimum quantity",
-)
 
 
 class PromartPayloadError(VtexPayloadError):
@@ -81,10 +63,7 @@ def build_promart_catalog_url(product_url: str) -> str:
 def is_promart_own_seller(seller_id: str, seller_name: str) -> bool:
     """Recognize Promart only when both reviewed seller identifiers agree."""
 
-    return (
-        seller_id.strip() == _OWN_SELLER_ID
-        and _searchable_text(seller_name) == _OWN_SELLER_NAME
-    )
+    return seller_id.strip() == _OWN_SELLER_ID and _searchable_text(seller_name) == _OWN_SELLER_NAME
 
 
 def _promart_offer_quality_flags(
@@ -97,34 +76,16 @@ def _promart_offer_quality_flags(
     seller_id = _optional_text(seller.get("sellerId"))
     seller_name = _optional_text(seller.get("sellerName"))
     id_claims_own = seller_id == _OWN_SELLER_ID
-    name_claims_own = (
-        seller_name is not None and _searchable_text(seller_name) == _OWN_SELLER_NAME
-    )
+    name_claims_own = seller_name is not None and _searchable_text(seller_name) == _OWN_SELLER_NAME
     if id_claims_own != name_claims_own:
         flags.append("ambiguous_promart_seller_identity")
 
     measurement_unit = _searchable_text(item.get("measurementUnit"))
     unit_multiplier = _positive_decimal(item.get("unitMultiplier"))
-    if (
-        measurement_unit not in _FIXED_MEASUREMENT_UNITS
-        or unit_multiplier != Decimal("1")
-    ):
+    if measurement_unit not in _FIXED_MEASUREMENT_UNITS or unit_multiplier != Decimal("1"):
         flags.append("unsupported_price_basis")
 
-    promotion_evidence = [
-        offer.get(field)
-        for field in _PROMOTION_FIELDS
-        if _has_content(offer.get(field))
-    ]
-
-    for container in (product, item):
-        for key, value in container.items():
-            normalized_key = _searchable_text(key)
-            if any(marker in normalized_key for marker in _CONDITIONAL_METADATA_MARKERS):
-                promotion_evidence.append({key: value})
-
-    if promotion_evidence:
-        flags.append("conditional_promotion_price")
+    flags.extend(conditional_vtex_price_flags(product, item, seller, offer))
     return flags
 
 
@@ -182,14 +143,6 @@ def _optional_text(value: Any) -> str | None:
         return None
     normalized = " ".join(value.split())
     return normalized or None
-
-
-def _has_content(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, (str, bytes, Mapping, list, tuple, set, frozenset)):
-        return bool(value)
-    return True
 
 
 def _positive_decimal(value: Any) -> Decimal | None:

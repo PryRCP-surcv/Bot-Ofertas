@@ -83,9 +83,7 @@ def test_parser_separates_sku_seller_variant_and_installments() -> None:
 
 def test_parser_suppresses_out_of_stock_prices_even_for_own_seller() -> None:
     unavailable = next(
-        item
-        for item in parse_fixture()
-        if item.sku == "sku-negro" and item.seller_id == "1"
+        item for item in parse_fixture() if item.sku == "sku-negro" and item.seller_id == "1"
     )
 
     assert unavailable.is_marketplace is False
@@ -101,6 +99,7 @@ def test_parser_marks_conditioned_promotions_and_ambiguous_own_sellers() -> None
     conditioned = next(item for item in observations if item.sku == "sku-blanco")
     ambiguous = next(item for item in observations if item.sku == "sku-gris")
 
+    assert "payment_method_price" in conditioned.quality_flags
     assert "conditional_promotion_price" in conditioned.quality_flags
     assert ambiguous.is_marketplace is True
     assert "ambiguous_oechsle_seller_identity" in ambiguous.quality_flags
@@ -135,6 +134,7 @@ def test_parser_marks_standard_vtex_payment_method_teasers() -> None:
         if values["sku"] == "sku-blanco" and values["seller_id"] == "1"
     )
 
+    assert "payment_method_price" in own.quality_flags
     assert "conditional_promotion_price" in own.quality_flags
 
 

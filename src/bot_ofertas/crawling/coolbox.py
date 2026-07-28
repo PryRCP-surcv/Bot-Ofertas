@@ -11,6 +11,7 @@ from bot_ofertas.crawling.vtex import (
     VtexParserConfig,
     VtexPayloadError,
     build_vtex_catalog_url,
+    conditional_vtex_price_flags,
     normalize_vtex_product_url,
     parse_vtex_products,
 )
@@ -62,6 +63,7 @@ _PARSER_CONFIG = VtexParserConfig(
     normalize_product_url=normalize_coolbox_product_url,
     is_own_seller=lambda seller_id, _seller_name: seller_id == "1",
     payload_error=CoolboxPayloadError,
+    offer_quality_flags=conditional_vtex_price_flags,
 )
 
 

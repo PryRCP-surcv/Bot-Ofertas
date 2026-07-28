@@ -87,6 +87,9 @@ def test_detection_dedupe_and_retryable_telegram_delivery_are_transactional() ->
     product_id: UUID | None = None
 
     settings = RuntimeSettings(
+        detector_version="phase1-v1",
+        confirmation_required=False,
+        minimum_alert_confidence=0,
         detection_history_limit=10,
         alert_cooldown_hours=24,
         alert_significant_improvement_ratio=Decimal("0.05"),
@@ -132,9 +135,7 @@ def test_detection_dedupe_and_retryable_telegram_delivery_are_transactional() ->
 
         first_summary = DetectionService(session, settings).process_new()
         first_detection = session.scalar(
-            select(DealDetection).where(
-                DealDetection.observation_id == first_saved.observation_id
-            )
+            select(DealDetection).where(DealDetection.observation_id == first_saved.observation_id)
         )
         assert first_summary.processed == 1
         assert first_summary.alert_candidates == 1
@@ -165,9 +166,7 @@ def test_detection_dedupe_and_retryable_telegram_delivery_are_transactional() ->
 
         second_summary = DetectionService(session, settings).process_new()
         second_detection = session.scalar(
-            select(DealDetection).where(
-                DealDetection.observation_id == second_saved.observation_id
-            )
+            select(DealDetection).where(DealDetection.observation_id == second_saved.observation_id)
         )
         assert second_summary.processed == 1
         assert second_summary.alert_candidates == 1
@@ -175,15 +174,18 @@ def test_detection_dedupe_and_retryable_telegram_delivery_are_transactional() ->
         assert second_summary.duplicates_suppressed == 1
         assert second_detection is not None
         assert second_detection.notification_status == "suppressed"
-        assert session.scalar(
-            select(func.count())
-            .select_from(NotificationDelivery)
-            .join(
-                DealDetection,
-                DealDetection.id == NotificationDelivery.detection_id,
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(NotificationDelivery)
+                .join(
+                    DealDetection,
+                    DealDetection.id == NotificationDelivery.detection_id,
+                )
+                .where(DealDetection.tracked_product_id == product.id)
             )
-            .where(DealDetection.tracked_product_id == product.id)
-        ) == 1
+            == 1
+        )
 
         claim_time = datetime.now(UTC) + timedelta(minutes=1)
         delivery_repository = NotificationDeliveryRepository(session)
@@ -195,9 +197,7 @@ def test_detection_dedupe_and_retryable_telegram_delivery_are_transactional() ->
             now=claim_time,
         )
         first_claim = next(
-            claim
-            for claim in first_claims
-            if claim.detection_id == first_detection.id
+            claim for claim in first_claims if claim.detection_id == first_detection.id
         )
         assert first_claim.detection_id == first_detection.id
         assert first_claim.product_name == "Laptop Acme Pro 14"
@@ -224,19 +224,14 @@ def test_detection_dedupe_and_retryable_telegram_delivery_are_transactional() ->
             max_attempts=3,
             now=claim_time + timedelta(seconds=29),
         )
-        assert all(
-            claim.detection_id != first_detection.id
-            for claim in not_due_claims
-        )
+        assert all(claim.detection_id != first_detection.id for claim in not_due_claims)
         retry_claims = delivery_repository.claim_due(
             channel="telegram",
             max_attempts=3,
             now=claim_time + timedelta(seconds=30),
         )
         retry_claim = next(
-            claim
-            for claim in retry_claims
-            if claim.detection_id == first_detection.id
+            claim for claim in retry_claims if claim.detection_id == first_detection.id
         )
         assert retry_claim.delivery_id == first_claim.delivery_id
 
@@ -282,6 +277,9 @@ def test_backfill_persists_old_decisions_but_only_latest_snapshot_can_alert() ->
     suffix = uuid4().hex
     observed_at = datetime(2026, 7, 27, 17, 0, tzinfo=UTC)
     settings = RuntimeSettings(
+        detector_version="phase1-v1",
+        confirmation_required=False,
+        minimum_alert_confidence=0,
         detector_config=DetectorConfig(minimum_history_samples=1),
     )
 
@@ -331,15 +329,18 @@ def test_backfill_persists_old_decisions_but_only_latest_snapshot_can_alert() ->
         assert detections[0].notification_status == "suppressed"
         assert detections[1].classification == "none"
         assert detections[1].notification_status == "not_applicable"
-        assert session.scalar(
-            select(func.count())
-            .select_from(NotificationDelivery)
-            .join(
-                DealDetection,
-                DealDetection.id == NotificationDelivery.detection_id,
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(NotificationDelivery)
+                .join(
+                    DealDetection,
+                    DealDetection.id == NotificationDelivery.detection_id,
+                )
+                .where(DealDetection.tracked_product_id == product.id)
             )
-            .where(DealDetection.tracked_product_id == product.id)
-        ) == 0
+            == 0
+        )
     finally:
         session.close()
         transaction.rollback()
@@ -355,6 +356,9 @@ def test_expired_last_attempt_is_swept_to_failed_after_worker_crash() -> None:
     suffix = uuid4().hex
     observed_at = datetime(2026, 7, 27, 19, 0, tzinfo=UTC)
     settings = RuntimeSettings(
+        detector_version="phase1-v1",
+        confirmation_required=False,
+        minimum_alert_confidence=0,
         notification_max_attempts=1,
         detector_config=DetectorConfig(minimum_history_samples=1),
     )
@@ -387,15 +391,11 @@ def test_expired_last_attempt_is_swept_to_failed_after_worker_crash() -> None:
         )
         DetectionService(session, settings).process_new(limit=1)
         detection = session.scalar(
-            select(DealDetection).where(
-                DealDetection.observation_id == saved.observation_id
-            )
+            select(DealDetection).where(DealDetection.observation_id == saved.observation_id)
         )
         assert detection is not None
         delivery = session.scalar(
-            select(NotificationDelivery).where(
-                NotificationDelivery.detection_id == detection.id
-            )
+            select(NotificationDelivery).where(NotificationDelivery.detection_id == detection.id)
         )
         assert delivery is not None
         isolated_channel = f"test-{suffix[:12]}"
@@ -488,7 +488,11 @@ def test_invalid_first_observation_cannot_poison_learned_variant() -> None:
 
         summary = DetectionService(
             session,
-            RuntimeSettings(),
+            RuntimeSettings(
+                detector_version="phase1-v1",
+                confirmation_required=False,
+                minimum_alert_confidence=0,
+            ),
         ).process_new(limit=10)
 
         assert summary.processed == 2
@@ -521,6 +525,9 @@ def test_stronger_candidate_supersedes_an_unsent_delivery() -> None:
     suffix = uuid4().hex
     first_at = datetime(2026, 7, 27, 22, 0, tzinfo=UTC)
     settings = RuntimeSettings(
+        detector_version="phase1-v1",
+        confirmation_required=False,
+        minimum_alert_confidence=0,
         detector_config=DetectorConfig(minimum_history_samples=1),
     )
 
@@ -574,20 +581,16 @@ def test_stronger_candidate_supersedes_an_unsent_delivery() -> None:
         DetectionService(session, settings).process_new(limit=1)
 
         first_detection = session.scalar(
-            select(DealDetection).where(
-                DealDetection.observation_id == first_saved.observation_id
-            )
+            select(DealDetection).where(DealDetection.observation_id == first_saved.observation_id)
         )
         second_detection = session.scalar(
-            select(DealDetection).where(
-                DealDetection.observation_id == second_saved.observation_id
-            )
+            select(DealDetection).where(DealDetection.observation_id == second_saved.observation_id)
         )
         assert first_detection is not None
         assert second_detection is not None
         assert first_detection.notification_status == "superseded"
         assert second_detection.notification_status == "pending"
-        assert second_detection.classification == "possible_price_error"
+        assert second_detection.classification == "exceptional_deal"
 
         deliveries = list(
             session.scalars(
@@ -663,19 +666,18 @@ def test_dispatcher_wires_a_leased_delivery_to_a_configured_channel() -> None:
             ),
         )
         settings = RuntimeSettings(
+            detector_version="phase1-v1",
+            confirmation_required=False,
+            minimum_alert_confidence=0,
             detector_config=DetectorConfig(minimum_history_samples=1),
         )
         DetectionService(session, settings).process_new(limit=1)
         detection = session.scalar(
-            select(DealDetection).where(
-                DealDetection.observation_id == saved.observation_id
-            )
+            select(DealDetection).where(DealDetection.observation_id == saved.observation_id)
         )
         assert detection is not None
         delivery = session.scalar(
-            select(NotificationDelivery).where(
-                NotificationDelivery.detection_id == detection.id
-            )
+            select(NotificationDelivery).where(NotificationDelivery.detection_id == detection.id)
         )
         assert delivery is not None
         delivery.channel = channel_name

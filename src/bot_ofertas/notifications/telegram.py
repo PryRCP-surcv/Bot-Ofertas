@@ -80,9 +80,7 @@ class UrllibTelegramTransport:
                 if isinstance(error_payload, Mapping):
                     parameters = error_payload.get("parameters")
                     if isinstance(parameters, Mapping):
-                        retry_after = _positive_integer(
-                            parameters.get("retry_after")
-                        )
+                        retry_after = _positive_integer(parameters.get("retry_after"))
             retryable = error.code == 429 or error.code >= 500
             raise TelegramTransportError(
                 "http_error",
@@ -175,12 +173,20 @@ def render_telegram_message(notification: OfferNotification) -> str:
         f"<b>Producto:</b> {product}",
     ]
     if notification.store_name is not None:
-        lines.append(
-            f"<b>Tienda:</b> {_escaped_bounded(notification.store_name, 250)}"
+        lines.append(f"<b>Tienda:</b> {_escaped_bounded(notification.store_name, 250)}")
+    if notification.confidence_score is not None:
+        lines.append(f"<b>Confianza:</b> {notification.confidence_score}/100")
+    if notification.confirmation_count is not None:
+        lines.append(f"<b>Confirmaciones:</b> {notification.confirmation_count} observaciones")
+    lines.append(f"<b>Precio actual:</b> {price}")
+    if notification.conditions:
+        conditions = _escaped_bounded(
+            "; ".join(notification.conditions),
+            400,
         )
+        lines.append(f"<b>Condiciones:</b> {conditions}")
     lines.extend(
         [
-            f"<b>Precio actual:</b> {price}",
             f"<b>{label}:</b> {comparison}",
             f"<b>Razón:</b> {reason}",
             f'<a href="{url}">Ver producto</a>',
@@ -285,8 +291,7 @@ class TelegramNotifier:
             raw_error_code = response.get("error_code")
             error_code = (
                 raw_error_code
-                if isinstance(raw_error_code, int)
-                and not isinstance(raw_error_code, bool)
+                if isinstance(raw_error_code, int) and not isinstance(raw_error_code, bool)
                 else None
             )
             parameters = response.get("parameters")
@@ -299,11 +304,7 @@ class TelegramNotifier:
                 channel=self.channel_name,
                 status=NotificationStatus.FAILED,
                 detail="Telegram API rejected the message",
-                retryable=(
-                    error_code is None
-                    or error_code == 429
-                    or error_code >= 500
-                ),
+                retryable=(error_code is None or error_code == 429 or error_code >= 500),
                 retry_after_seconds=retry_after,
             )
 

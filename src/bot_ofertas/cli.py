@@ -18,11 +18,11 @@ from alembic import command
 from alembic.config import Config
 from scrapy.crawler import CrawlerProcess
 from scrapy.settings import Settings
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from bot_ofertas.crawling import settings as crawling_settings
-from bot_ofertas.detection import canonicalize_variant
+from bot_ofertas.detection import assess_quality_flags, canonicalize_variant
 from bot_ofertas.notifications import TelegramNotifier
 from bot_ofertas.runtime_config import RuntimeSettings
 from bot_ofertas.scheduling import LocalScheduler
@@ -39,11 +39,13 @@ from bot_ofertas.storage.database import (
 )
 from bot_ofertas.storage.models import (
     DealDetection,
+    OfferConfirmationState,
     PriceObservationRecord,
     StoreCrawlState,
     TrackedProduct,
 )
 from bot_ofertas.storage.repositories import (
+    EquivalentProductRepository,
     ProductClaimBatch,
     StoreCrawlStateRepository,
     TrackedProductRepository,
@@ -61,6 +63,23 @@ _MAX_ANALYSIS_LIMIT = 1_000
 _DEFAULT_NOTIFICATION_LIMIT = 20
 _MAX_NOTIFICATION_LIMIT = 100
 _CRAWL_LEASE_DURATION = timedelta(hours=2)
+_CONDITION_FLAG_LABELS = {
+    "conditional_card_price": "requiere tarjeta o medio de pago específico",
+    "conditional_payment_method_price": "requiere tarjeta o medio de pago específico",
+    "payment_method_price": "requiere tarjeta o medio de pago específico",
+    "card_only_price": "requiere tarjeta o medio de pago específico",
+    "tarjeta_only_price": "requiere tarjeta o medio de pago específico",
+    "conditional_membership_price": "requiere membresía",
+    "membership_price": "requiere membresía",
+    "membership_only_price": "requiere membresía",
+    "conditional_coupon_price": "requiere cupón o código promocional",
+    "coupon_price": "requiere cupón o código promocional",
+    "coupon_only_price": "requiere cupón o código promocional",
+    "conditional_quantity_price": "requiere una cantidad mínima",
+    "minimum_quantity_price": "requiere una cantidad mínima",
+    "quantity_tier_price": "requiere una cantidad mínima",
+    "conditional_promotion_price": "promoción con requisitos; revisar condiciones",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +117,44 @@ def _uuid_argument(value: str) -> UUID:
         raise argparse.ArgumentTypeError("debe ser un UUID válido") from exc
 
 
+def _canonical_variant_pairs(
+    pairs: Sequence[tuple[str, str]],
+) -> dict[str, str]:
+    expected_variant: dict[str, str] = {}
+    for key, value in pairs:
+        normalized_pair = canonicalize_variant({key: value})
+        normalized_key, normalized_value = next(iter(normalized_pair.items()))
+        if normalized_key in expected_variant:
+            raise ValueError(
+                "cada clave de --variant debe ser única, incluso con mayúsculas o acentos"
+            )
+        expected_variant[normalized_key] = normalized_value
+    return expected_variant
+
+
+def _quality_flag_labels(
+    quality_flags: Sequence[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    assessment = assess_quality_flags(quality_flags)
+    conditions: list[str] = []
+    has_specific_condition = any(
+        flag.strip().casefold() in _CONDITION_FLAG_LABELS
+        and flag.strip().casefold() != "conditional_promotion_price"
+        for flag in quality_flags
+    )
+    for raw_flag in quality_flags:
+        flag = raw_flag.strip().casefold()
+        condition = _CONDITION_FLAG_LABELS.get(flag)
+        if condition is not None and (
+            flag != "conditional_promotion_price" or not has_specific_condition
+        ):
+            conditions.append(condition)
+    return (
+        tuple(dict.fromkeys(conditions)),
+        assessment.blocking_quality_flags,
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bot-ofertas",
@@ -108,6 +165,16 @@ def _build_parser() -> argparse.ArgumentParser:
     db_parser = commands.add_parser("db", help="Administra el esquema de PostgreSQL.")
     db_commands = db_parser.add_subparsers(dest="db_command", required=True)
     db_commands.add_parser("upgrade", help="Aplica todas las migraciones pendientes.")
+
+    config_parser = commands.add_parser(
+        "config",
+        help="Muestra la configuración efectiva sin revelar secretos.",
+    )
+    config_commands = config_parser.add_subparsers(
+        dest="config_command",
+        required=True,
+    )
+    config_commands.add_parser("show", help="Muestra la política activa de Fase 3.")
 
     store_parser = commands.add_parser(
         "store",
@@ -162,6 +229,62 @@ def _build_parser() -> argparse.ArgumentParser:
     ):
         status_parser = product_commands.add_parser(action, help=help_text)
         status_parser.add_argument("product_id", type=_uuid_argument, metavar="ID")
+    variant_parser = product_commands.add_parser(
+        "variant",
+        help="Selecciona la variante exacta de un producto ya registrado.",
+    )
+    variant_parser.add_argument("product_id", type=_uuid_argument, metavar="ID")
+    variant_parser.add_argument(
+        "--variant",
+        action="append",
+        required=True,
+        type=_variant_pair,
+        metavar="CLAVE=VALOR",
+        help="Variante exacta; puede repetirse, por ejemplo Color=Negro.",
+    )
+
+    equivalence_parser = commands.add_parser(
+        "equivalence",
+        help="Administra equivalencias verificadas entre tiendas.",
+    )
+    equivalence_commands = equivalence_parser.add_subparsers(
+        dest="equivalence_command",
+        required=True,
+    )
+    equivalence_create = equivalence_commands.add_parser(
+        "create",
+        help="Crea un grupo canónico para un modelo y variante exactos.",
+    )
+    equivalence_create.add_argument("--name", required=True)
+    equivalence_create.add_argument("--brand", required=True)
+    equivalence_create.add_argument("--model", required=True)
+    equivalence_create.add_argument(
+        "--variant",
+        action="append",
+        default=[],
+        type=_variant_pair,
+        metavar="CLAVE=VALOR",
+    )
+    equivalence_commands.add_parser("list", help="Lista grupos y sus tiendas.")
+    for action in ("add-product", "remove-product"):
+        membership_parser = equivalence_commands.add_parser(
+            action,
+            help=(
+                "Agrega un producto verificado al grupo."
+                if action == "add-product"
+                else "Retira un producto del grupo."
+            ),
+        )
+        membership_parser.add_argument(
+            "group_id",
+            type=_uuid_argument,
+            metavar="GRUPO_ID",
+        )
+        membership_parser.add_argument(
+            "product_id",
+            type=_uuid_argument,
+            metavar="PRODUCTO_ID",
+        )
 
     crawl_parser = commands.add_parser(
         "crawl",
@@ -240,6 +363,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Incluye decisiones sin oferta, descartes y errores aislados.",
     )
 
+    confirmation_parser = commands.add_parser(
+        "confirmation",
+        help="Consulta candidatas que esperan otra observación independiente.",
+    )
+    confirmation_commands = confirmation_parser.add_subparsers(
+        dest="confirmation_command",
+        required=True,
+    )
+    confirmation_list = confirmation_commands.add_parser(
+        "list",
+        help="Lista estados de confirmación activos.",
+    )
+    confirmation_list.add_argument(
+        "--limit",
+        type=_integer_between(1, _MAX_HISTORY_LIMIT),
+        default=_DEFAULT_HISTORY_LIMIT,
+        metavar="N",
+    )
+
     cycle_parser = commands.add_parser(
         "cycle",
         help="Ejecuta un ciclo: rastreo, análisis y notificaciones.",
@@ -304,20 +446,52 @@ def _upgrade_database() -> int:
     return 0
 
 
+def _show_config() -> int:
+    settings = RuntimeSettings.from_env()
+    print("Configuración efectiva de Fase 3:")
+    print(f"- Detector: {settings.detector_version}")
+    print(
+        "- Historial: "
+        f"{settings.detection_history_days} días; "
+        f"máximo {settings.detection_history_limit} observaciones por oferta"
+    )
+    print(
+        "- Medianas: 7, 30 y 90 días; "
+        f"mínimo {settings.detector_config.minimum_history_samples} muestras"
+    )
+    print(
+        "- Equivalentes: "
+        f"mínimo {settings.detector_config.minimum_equivalent_samples} tiendas; "
+        f"frescura {settings.equivalent_max_age_hours} horas"
+    )
+    print(
+        "- Confirmación: "
+        f"{'obligatoria' if settings.confirmation_required else 'desactivada'}; "
+        f"tolerancia {settings.confirmation_price_tolerance_ratio * 100}%"
+    )
+    print(
+        "- Confianza mínima para alertar: "
+        f"{settings.minimum_alert_confidence}/100; "
+        f"bono por confirmación {settings.confirmation_confidence_bonus}"
+    )
+    print(
+        "- Ofertas condicionadas: permitidas con aviso explícito; "
+        "una cuota nunca sustituye al precio total"
+    )
+    print(
+        "- Telegram: "
+        f"{'habilitado' if settings.telegram_enabled else 'deshabilitado'}; "
+        f"token={'configurado' if settings.telegram_token else 'ausente'}; "
+        f"chat_id={'configurado' if settings.telegram_chat_id else 'ausente'}"
+    )
+    return 0
+
+
 def _add_product(args: argparse.Namespace) -> int:
     label = args.label.strip()
     if not label:
         raise ValueError("--label no puede estar vacío")
-    variant_pairs = list(args.variant)
-    expected_variant: dict[str, str] = {}
-    for key, value in variant_pairs:
-        normalized_pair = canonicalize_variant({key: value})
-        normalized_key, normalized_value = next(iter(normalized_pair.items()))
-        if normalized_key in expected_variant:
-            raise ValueError(
-                "cada clave de --variant debe ser única, incluso en mayúsculas o acentos"
-            )
-        expected_variant[normalized_key] = normalized_value
+    expected_variant = _canonical_variant_pairs(args.variant)
 
     adapter, canonical_url = resolve_store(args.url)
     if args.interval < adapter.policy.minimum_interval_minutes:
@@ -423,8 +597,7 @@ def _list_products() -> int:
             print(f"  Modelo esperado: {product.expected_model}")
         if product.expected_variant:
             variant = ", ".join(
-                f"{key}={value}"
-                for key, value in sorted(product.expected_variant.items())
+                f"{key}={value}" for key, value in sorted(product.expected_variant.items())
             )
             print(f"  Variante esperada: {variant}")
         print(
@@ -452,6 +625,117 @@ def _set_product_active(product_id: UUID, *, active: bool) -> int:
         return 2
     state = "activado" if active else "desactivado"
     print(f"Producto {state}: {label} ({product_id}).")
+    return 0
+
+
+def _set_product_variant(
+    product_id: UUID,
+    variant_pairs: Sequence[tuple[str, str]],
+) -> int:
+    expected_variant = _canonical_variant_pairs(variant_pairs)
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    try:
+        with session_scope(factory) as session:
+            product = TrackedProductRepository(session).set_expected_variant(
+                product_id,
+                expected_variant=expected_variant,
+            )
+            label = product.label if product is not None else None
+    finally:
+        engine.dispose()
+    if label is None:
+        print(f"No existe un producto con ID {product_id}.", file=sys.stderr)
+        return 2
+    print(f"Variante seleccionada para {label}: {_format_variant(expected_variant)}")
+    return 0
+
+
+def _create_equivalence(args: argparse.Namespace) -> int:
+    canonical_variant = _canonical_variant_pairs(args.variant)
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    try:
+        try:
+            with session_scope(factory) as session:
+                group = EquivalentProductRepository(session).create_group(
+                    name=args.name,
+                    brand=args.brand,
+                    model=args.model,
+                    canonical_variant=canonical_variant,
+                )
+                group_id = group.id
+        except IntegrityError:
+            print("Ya existe un grupo de equivalencia con ese nombre.", file=sys.stderr)
+            return 2
+    finally:
+        engine.dispose()
+    print(f"Grupo de equivalencia creado: {args.name} ({group_id}).")
+    return 0
+
+
+def _list_equivalences() -> int:
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    rows: list[tuple[Any, list[TrackedProduct]]] = []
+    try:
+        with session_scope(factory) as session:
+            repository = EquivalentProductRepository(session)
+            rows = [(group, repository.members(group.id)) for group in repository.list_groups()]
+    finally:
+        engine.dispose()
+    if not rows:
+        print("Todavía no hay equivalencias verificadas.")
+        return 0
+    print(f"Grupos de equivalencia: {len(rows)}")
+    for group, members in rows:
+        print()
+        print(f"- {group.name} ({group.id})")
+        print(f"  Identidad: {group.brand} {group.model}")
+        if group.canonical_variant:
+            print(f"  Variante: {_format_variant(group.canonical_variant)}")
+        print(f"  Miembros: {len(members)}")
+        for product in members:
+            print(f"    - {product.store_slug}: {product.label} ({product.id})")
+    return 0
+
+
+def _change_equivalence_membership(
+    *,
+    group_id: UUID,
+    product_id: UUID,
+    add: bool,
+) -> int:
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    try:
+        try:
+            with session_scope(factory) as session:
+                repository = EquivalentProductRepository(session)
+                if add:
+                    repository.add_product(
+                        group_id=group_id,
+                        tracked_product_id=product_id,
+                    )
+                    changed = True
+                else:
+                    changed = repository.remove_product(
+                        group_id=group_id,
+                        tracked_product_id=product_id,
+                    )
+        except IntegrityError:
+            print(
+                "El producto ya pertenece a un grupo de equivalencia.",
+                file=sys.stderr,
+            )
+            return 2
+    finally:
+        engine.dispose()
+    if not changed:
+        print("No existe esa membresía de equivalencia.", file=sys.stderr)
+        return 2
+    action = "agregado al" if add else "retirado del"
+    print(f"Producto {action} grupo de equivalencia.")
     return 0
 
 
@@ -688,8 +972,11 @@ def _history(limit: int) -> int:
             print(f"  Variante: {_format_variant(observation.variant)}")
         if observation.installments:
             print(f"  Cuotas registradas: {len(observation.installments)}")
-        if observation.quality_flags:
-            print(f"  Flags de calidad: {', '.join(observation.quality_flags)}")
+        conditions, blocking_flags = _quality_flag_labels(observation.quality_flags)
+        if conditions:
+            print(f"  Condiciones: {'; '.join(conditions)}")
+        if blocking_flags:
+            print(f"  Advertencias de calidad: {', '.join(blocking_flags)}")
         print(f"  URL: {observation.source_url}")
     return 0
 
@@ -704,6 +991,9 @@ def _analyze(limit: int) -> int:
         "rejected": 0,
         "no_deal": 0,
         "alert_candidates": 0,
+        "awaiting_confirmation": 0,
+        "confirmed_candidates": 0,
+        "low_confidence_suppressed": 0,
         "notifications_reserved": 0,
         "duplicates_suppressed": 0,
     }
@@ -726,6 +1016,9 @@ def _analyze(limit: int) -> int:
         f"descartadas={summary.rejected}, "
         f"sin_oferta={summary.no_deal}, "
         f"candidatas={summary.alert_candidates}, "
+        f"esperando_confirmación={summary.awaiting_confirmation}, "
+        f"confirmadas={summary.confirmed_candidates}, "
+        f"confianza_insuficiente={summary.low_confidence_suppressed}, "
         f"alertas_pendientes={summary.notifications_reserved}, "
         f"duplicadas_omitidas={summary.duplicates_suppressed}."
     )
@@ -805,20 +1098,24 @@ def _list_alerts(limit: int, *, include_all: bool = False) -> int:
     print(f"{label}: {len(alerts)}")
     for detection, observation, tracked_label in alerts:
         print()
-        print(
-            f"- {_format_datetime(detection.detected_at)} | "
-            f"{tracked_label or observation.title}"
-        )
+        print(f"- {_format_datetime(detection.detected_at)} | {tracked_label or observation.title}")
         print(
             f"  Clasificación: {detection.classification} | "
-            f"Puntuación: {detection.score}/100"
+            f"Severidad: {detection.score}/100 | "
+            f"Confianza: {detection.confidence_score}/100 "
+            f"({detection.confidence_level})"
         )
         print(
             f"  Precio: {_format_price(observation.currency, detection.current_price)} | "
             "Referencia: "
             f"{_format_price(observation.currency, detection.reference_price)}"
         )
-        print(f"  Alerta: {detection.notification_status}")
+        print(
+            f"  Confirmación: {detection.confirmation_status} "
+            f"({detection.confirmation_count} observaciones) | "
+            f"Alerta: {detection.notification_status}"
+        )
+        print(f"  Detector: {detection.detector_version}")
         if detection.reasons:
             print(f"  Motivos: {', '.join(detection.reasons)}")
         if detection.rejection_reasons:
@@ -832,9 +1129,62 @@ def _list_alerts(limit: int, *, include_all: bool = False) -> int:
             print(f"  Variante: {_format_variant(observation.variant)}")
         if observation.installments:
             print(f"  Cuotas registradas: {len(observation.installments)}")
-        if observation.quality_flags:
-            print(f"  Flags de calidad: {', '.join(observation.quality_flags)}")
+        conditions, blocking_flags = _quality_flag_labels(observation.quality_flags)
+        if conditions:
+            print(f"  Condiciones: {'; '.join(conditions)}")
+        if blocking_flags:
+            print(f"  Advertencias de calidad: {', '.join(blocking_flags)}")
         print(f"  URL: {observation.source_url}")
+    return 0
+
+
+def _list_confirmations(limit: int) -> int:
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    try:
+        with session_scope(factory) as session:
+            statement = (
+                select(
+                    OfferConfirmationState,
+                    TrackedProduct.label,
+                )
+                .outerjoin(
+                    TrackedProduct,
+                    TrackedProduct.id == OfferConfirmationState.tracked_product_id,
+                )
+                .join(
+                    DealDetection,
+                    DealDetection.id == OfferConfirmationState.candidate_detection_id,
+                )
+                .where(
+                    DealDetection.confirmation_status == "awaiting",
+                    OfferConfirmationState.expires_at > func.now(),
+                )
+                .order_by(
+                    OfferConfirmationState.expires_at.asc(),
+                    OfferConfirmationState.offer_key.asc(),
+                )
+                .limit(limit)
+            )
+            rows = list(session.execute(statement))
+    finally:
+        engine.dispose()
+    if not rows:
+        print("No hay ofertas esperando confirmación.")
+        return 0
+    print(f"Confirmaciones activas: {len(rows)}")
+    for state, label in rows:
+        print()
+        print(f"- {label or state.offer_key}")
+        print(
+            f"  Clasificación candidata: {state.candidate_classification} | "
+            f"Precio: PEN {state.candidate_price}"
+        )
+        print(
+            f"  Evidencias válidas: {state.confirmation_count} | "
+            f"Última: {_format_datetime(state.last_seen_at)}"
+        )
+        print(f"  Expira: {_format_datetime(state.expires_at)}")
     return 0
 
 
@@ -842,9 +1192,7 @@ def _cycle(args: argparse.Namespace) -> int:
     print("=== Rastreo ===")
     crawl_status = _isolated_cycle_stage(
         "rastreo",
-        lambda: _crawl(
-            argparse.Namespace(force=False, limit=args.crawl_limit)
-        ),
+        lambda: _crawl(argparse.Namespace(force=False, limit=args.crawl_limit)),
     )
     print()
     print("=== Detección ===")
@@ -866,8 +1214,7 @@ def _isolated_cycle_stage(name: str, operation: Callable[[], int]) -> int:
         return int(operation())
     except SQLAlchemyError:
         print(
-            f"Error en {name}: PostgreSQL no pudo completar la etapa; "
-            "el ciclo continuará.",
+            f"Error en {name}: PostgreSQL no pudo completar la etapa; el ciclo continuará.",
             file=sys.stderr,
         )
         return 1
@@ -876,8 +1223,7 @@ def _isolated_cycle_stage(name: str, operation: Callable[[], int]) -> int:
         return 1
     except Exception as error:
         print(
-            f"Error inesperado en {name} ({type(error).__name__}); "
-            "el ciclo continuará.",
+            f"Error inesperado en {name} ({type(error).__name__}); el ciclo continuará.",
             file=sys.stderr,
         )
         return 1
@@ -909,9 +1255,7 @@ def _run_monitor(args: argparse.Namespace) -> int:
             check=False,
         )
         if completed.returncode != 0:
-            raise RuntimeError(
-                f"el ciclo terminó con código {completed.returncode}"
-            )
+            raise RuntimeError(f"el ciclo terminó con código {completed.returncode}")
 
     print(
         f"Monitor iniciado; ejecutará un ciclo cada {poll_seconds} segundos. "
@@ -943,6 +1287,8 @@ def _format_variant(variant: dict[str, str]) -> str:
 def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "db" and args.db_command == "upgrade":
         return _upgrade_database()
+    if args.command == "config" and args.config_command == "show":
+        return _show_config()
     if args.command == "store" and args.store_command == "list":
         return _list_stores()
     if args.command == "product" and args.product_command == "add":
@@ -953,6 +1299,24 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _set_product_active(args.product_id, active=True)
     if args.command == "product" and args.product_command == "disable":
         return _set_product_active(args.product_id, active=False)
+    if args.command == "product" and args.product_command == "variant":
+        return _set_product_variant(args.product_id, args.variant)
+    if args.command == "equivalence" and args.equivalence_command == "create":
+        return _create_equivalence(args)
+    if args.command == "equivalence" and args.equivalence_command == "list":
+        return _list_equivalences()
+    if args.command == "equivalence" and args.equivalence_command == "add-product":
+        return _change_equivalence_membership(
+            group_id=args.group_id,
+            product_id=args.product_id,
+            add=True,
+        )
+    if args.command == "equivalence" and args.equivalence_command == "remove-product":
+        return _change_equivalence_membership(
+            group_id=args.group_id,
+            product_id=args.product_id,
+            add=False,
+        )
     if args.command == "crawl":
         return _crawl(args)
     if args.command == "history":
@@ -963,6 +1327,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _notify(args.limit)
     if args.command == "alert" and args.alert_command == "list":
         return _list_alerts(args.limit, include_all=args.all)
+    if args.command == "confirmation" and args.confirmation_command == "list":
+        return _list_confirmations(args.limit)
     if args.command == "cycle":
         return _cycle(args)
     if args.command == "run":
