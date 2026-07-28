@@ -43,6 +43,29 @@ class CrawlRunStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class CrawlJobStatus(StrEnum):
+    """Durable control-plane state for one requested crawl batch."""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    RETRYING = "retrying"
+    SUCCEEDED = "succeeded"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class CrawlJobItemStatus(StrEnum):
+    """Execution state for one exact product snapshot within a crawl job."""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    CANCELLED = "cancelled"
+
+
 def _enum_values(enum_class: type[StrEnum]) -> list[str]:
     return [member.value for member in enum_class]
 
@@ -113,12 +136,21 @@ class TrackedProduct(Base):
             "(lease_token IS NULL) = (lease_expires_at IS NULL)",
             name="ck_tracked_products_lease_pair",
         ),
+        CheckConstraint(
+            "version >= 1",
+            name="ck_tracked_products_version_positive",
+        ),
+        CheckConstraint(
+            "archived_at IS NULL OR "
+            "(NOT active AND lease_token IS NULL AND lease_expires_at IS NULL)",
+            name="ck_tracked_products_archived_inactive",
+        ),
         Index(
             "ix_tracked_products_scheduler",
             "store_slug",
             "last_checked_at",
             "lease_expires_at",
-            postgresql_where=text("active"),
+            postgresql_where=text("active AND archived_at IS NULL"),
         ),
     )
 
@@ -150,6 +182,13 @@ class TrackedProduct(Base):
         default=True,
         server_default=text("true"),
     )
+    version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default=text("1"),
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     check_interval_minutes: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
@@ -188,6 +227,10 @@ class TrackedProduct(Base):
         back_populates="tracked_product",
         passive_deletes=True,
         uselist=False,
+    )
+    crawl_job_items: Mapped[list[CrawlJobItem]] = relationship(
+        back_populates="tracked_product",
+        passive_deletes=True,
     )
 
 
@@ -292,6 +335,111 @@ class EquivalentProductMembership(Base):
     tracked_product: Mapped[TrackedProduct] = relationship(back_populates="equivalence_membership")
 
 
+class AdminConfigRevision(Base):
+    """Immutable, complete snapshot of the public runtime policy."""
+
+    __tablename__ = "admin_config_revisions"
+    __table_args__ = (
+        CheckConstraint(
+            "schema_version >= 1",
+            name="ck_admin_config_revisions_schema_version_positive",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(policy) = 'object'",
+            name="ck_admin_config_revisions_policy_object",
+        ),
+        CheckConstraint(
+            "policy_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="ck_admin_config_revisions_policy_fingerprint",
+        ),
+        CheckConstraint(
+            "btrim(changed_by) <> ''",
+            name="ck_admin_config_revisions_changed_by_non_empty",
+        ),
+        CheckConstraint(
+            "change_reason IS NULL OR btrim(change_reason) <> ''",
+            name="ck_admin_config_revisions_reason_non_empty",
+        ),
+        CheckConstraint(
+            "(idempotency_key_hash IS NULL) = (request_fingerprint IS NULL)",
+            name="ck_admin_config_revisions_idempotency_pair",
+        ),
+        CheckConstraint(
+            "idempotency_key_hash IS NULL "
+            "OR idempotency_key_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_admin_config_revisions_idempotency_hash",
+        ),
+        CheckConstraint(
+            "request_fingerprint IS NULL "
+            "OR request_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="ck_admin_config_revisions_request_fingerprint",
+        ),
+        CheckConstraint(
+            "previous_revision_id IS NULL OR previous_revision_id <> id",
+            name="ck_admin_config_revisions_previous_distinct",
+        ),
+        CheckConstraint(
+            "restored_from_revision_id IS NULL OR restored_from_revision_id <> id",
+            name="ck_admin_config_revisions_restored_distinct",
+        ),
+        UniqueConstraint(
+            "idempotency_key_hash",
+            name="uq_admin_config_revisions_idempotency_hash",
+        ),
+        Index("ix_admin_config_revisions_created", "created_at", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    schema_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default=text("1"),
+    )
+    policy: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+    policy_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    previous_revision_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "admin_config_revisions.id",
+            name="fk_admin_config_revisions_previous_revision_id",
+            ondelete="RESTRICT",
+        ),
+    )
+    restored_from_revision_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "admin_config_revisions.id",
+            name="fk_admin_config_revisions_restored_from_revision_id",
+            ondelete="RESTRICT",
+        ),
+    )
+    changed_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    change_reason: Mapped[str | None] = mapped_column(Text)
+    idempotency_key_hash: Mapped[str | None] = mapped_column(String(64))
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+
+    detections: Mapped[list[DealDetection]] = relationship(
+        back_populates="config_revision",
+        passive_deletes=True,
+    )
+    crawl_jobs: Mapped[list[CrawlJob]] = relationship(
+        back_populates="config_revision",
+        passive_deletes=True,
+    )
+
+
 class CrawlRun(Base):
     """One bounded execution of one store spider."""
 
@@ -358,6 +506,332 @@ class CrawlRun(Base):
         back_populates="run",
         passive_deletes=True,
     )
+    crawl_job_items: Mapped[list[CrawlJobItem]] = relationship(
+        back_populates="crawl_run",
+        passive_deletes=True,
+    )
+
+
+class CrawlJob(Base):
+    """Durable PostgreSQL work item created by the administration plane."""
+
+    __tablename__ = "crawl_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN "
+            "('queued', 'running', 'retrying', 'succeeded', 'partial', "
+            "'failed', 'cancelled')",
+            name="ck_crawl_jobs_status",
+        ),
+        CheckConstraint(
+            "request_source IN ('api', 'cli', 'scheduler')",
+            name="ck_crawl_jobs_request_source",
+        ),
+        CheckConstraint(
+            "btrim(requested_by) <> ''",
+            name="ck_crawl_jobs_requested_by_non_empty",
+        ),
+        CheckConstraint(
+            "priority >= 0 AND priority <= 100",
+            name="ck_crawl_jobs_priority_range",
+        ),
+        CheckConstraint(
+            "max_attempts >= 1 AND max_attempts <= 20 "
+            "AND attempt_count >= 0 AND attempt_count <= max_attempts",
+            name="ck_crawl_jobs_attempts",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(request_payload) = 'object'",
+            name="ck_crawl_jobs_request_payload_object",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(result) = 'object'",
+            name="ck_crawl_jobs_result_object",
+        ),
+        CheckConstraint(
+            "idempotency_key_hash ~ '^[0-9a-f]{64}$'",
+            name="ck_crawl_jobs_idempotency_hash",
+        ),
+        CheckConstraint(
+            "request_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="ck_crawl_jobs_request_fingerprint",
+        ),
+        CheckConstraint(
+            "(lease_token IS NULL) = (lease_expires_at IS NULL)",
+            name="ck_crawl_jobs_lease_pair",
+        ),
+        CheckConstraint(
+            "(status = 'running') = (lease_token IS NOT NULL)",
+            name="ck_crawl_jobs_running_lease",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded', 'partial', 'failed', 'cancelled')) "
+            "= (finished_at IS NOT NULL)",
+            name="ck_crawl_jobs_terminal_finished",
+        ),
+        CheckConstraint(
+            "(attempt_count = 0) = (started_at IS NULL)",
+            name="ck_crawl_jobs_started_attempt",
+        ),
+        CheckConstraint(
+            "(attempt_count = 0) = (last_claimed_at IS NULL)",
+            name="ck_crawl_jobs_last_claim_attempt",
+        ),
+        CheckConstraint(
+            "last_claimed_at IS NULL OR last_claimed_at >= started_at",
+            name="ck_crawl_jobs_claim_order",
+        ),
+        CheckConstraint(
+            "lease_expires_at IS NULL OR lease_expires_at > last_claimed_at",
+            name="ck_crawl_jobs_lease_order",
+        ),
+        CheckConstraint(
+            "finished_at IS NULL OR finished_at >= COALESCE(started_at, created_at)",
+            name="ck_crawl_jobs_finish_order",
+        ),
+        CheckConstraint(
+            "(cancel_requested_at IS NULL) = (cancel_requested_by IS NULL)",
+            name="ck_crawl_jobs_cancel_pair",
+        ),
+        CheckConstraint(
+            "cancel_requested_at IS NULL OR status IN ('running', 'cancelled')",
+            name="ck_crawl_jobs_cancel_status",
+        ),
+        UniqueConstraint(
+            "idempotency_key_hash",
+            name="uq_crawl_jobs_idempotency_hash",
+        ),
+        Index(
+            "ix_crawl_jobs_claim",
+            "status",
+            "next_attempt_at",
+            "priority",
+            "created_at",
+            postgresql_where=text("status IN ('queued', 'retrying', 'running')"),
+        ),
+        Index(
+            "ix_crawl_jobs_expired_lease",
+            "lease_expires_at",
+            postgresql_where=text("status = 'running'"),
+        ),
+        Index("ix_crawl_jobs_recent", "created_at", "id"),
+        Index("ix_crawl_jobs_status_recent", "status", "created_at", "id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+    status: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default=CrawlJobStatus.QUEUED.value,
+        server_default=text("'queued'"),
+    )
+    request_source: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="api",
+        server_default=text("'api'"),
+    )
+    requested_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+    idempotency_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    force: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+    priority: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=50,
+        server_default=text("50"),
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=3,
+        server_default=text("3"),
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    config_revision_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "admin_config_revisions.id",
+            name="fk_crawl_jobs_config_revision_id",
+            ondelete="RESTRICT",
+        ),
+    )
+    lease_token: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_worker_id: Mapped[str | None] = mapped_column(String(200))
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_requested_by: Mapped[str | None] = mapped_column(String(200))
+    last_error_code: Mapped[str | None] = mapped_column(String(100))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    result: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.now(),
+    )
+
+    config_revision: Mapped[AdminConfigRevision | None] = relationship(
+        back_populates="crawl_jobs",
+    )
+    items: Mapped[list[CrawlJobItem]] = relationship(
+        back_populates="job",
+        passive_deletes=True,
+        order_by="CrawlJobItem.id",
+    )
+
+
+class CrawlJobItem(Base):
+    """Exact product snapshot plus mutable outcome for one crawl job."""
+
+    __tablename__ = "crawl_job_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "job_id",
+            "tracked_product_id",
+            name="uq_crawl_job_items_job_product",
+        ),
+        CheckConstraint(
+            "status IN "
+            "('queued', 'running', 'succeeded', 'failed', 'skipped', 'cancelled')",
+            name="ck_crawl_job_items_status",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0",
+            name="ck_crawl_job_items_attempt_count_non_negative",
+        ),
+        CheckConstraint(
+            "btrim(store_slug) <> '' AND btrim(source_url) <> '' AND btrim(label) <> ''",
+            name="ck_crawl_job_items_snapshot_non_empty",
+        ),
+        CheckConstraint(
+            "(status IN ('succeeded', 'failed', 'skipped', 'cancelled')) "
+            "= (finished_at IS NOT NULL)",
+            name="ck_crawl_job_items_terminal_finished",
+        ),
+        CheckConstraint(
+            "(attempt_count = 0) = (started_at IS NULL)",
+            name="ck_crawl_job_items_started_attempt",
+        ),
+        CheckConstraint(
+            "finished_at IS NULL OR finished_at >= started_at",
+            name="ck_crawl_job_items_finish_order",
+        ),
+        Index("ix_crawl_job_items_job_status", "job_id", "status", "id"),
+        Index("ix_crawl_job_items_product_recent", "tracked_product_id", "created_at"),
+        Index("ix_crawl_job_items_run", "crawl_run_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    job_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey(
+            "crawl_jobs.id",
+            name="fk_crawl_job_items_job_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    tracked_product_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey(
+            "tracked_products.id",
+            name="fk_crawl_job_items_tracked_product_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    crawl_run_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey(
+            "crawl_runs.id",
+            name="fk_crawl_job_items_crawl_run_id",
+            ondelete="RESTRICT",
+        ),
+    )
+    store_slug: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    label: Mapped[str] = mapped_column(String(500), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default=CrawlJobItemStatus.QUEUED.value,
+        server_default=text("'queued'"),
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(100))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    result: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.now(),
+    )
+
+    job: Mapped[CrawlJob] = relationship(back_populates="items")
+    tracked_product: Mapped[TrackedProduct] = relationship(back_populates="crawl_job_items")
+    crawl_run: Mapped[CrawlRun | None] = relationship(back_populates="crawl_job_items")
 
 
 class PriceObservationRecord(Base):
@@ -508,7 +982,8 @@ class DealDetection(Base):
         UniqueConstraint(
             "observation_id",
             "detector_version",
-            name="uq_deal_detections_observation_version",
+            "policy_fingerprint",
+            name="uq_deal_detections_observation_version_policy",
         ),
         CheckConstraint(
             "score >= 0 AND score <= 100",
@@ -517,6 +992,10 @@ class DealDetection(Base):
         CheckConstraint(
             "detector_version <> ''",
             name="ck_deal_detections_detector_version_non_empty",
+        ),
+        CheckConstraint(
+            "policy_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="ck_deal_detections_policy_fingerprint",
         ),
         CheckConstraint(
             "confidence_score >= 0 AND confidence_score <= 100",
@@ -576,6 +1055,11 @@ class DealDetection(Base):
             "detected_at",
             postgresql_where=text("notification_status IN ('pending', 'retrying')"),
         ),
+        Index(
+            "ix_deal_detections_config_revision",
+            "config_revision_id",
+            postgresql_where=text("config_revision_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -593,6 +1077,18 @@ class DealDetection(Base):
         nullable=False,
         default="phase3-v2",
         server_default=text("'phase3-v2'"),
+    )
+    policy_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    config_revision_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "admin_config_revisions.id",
+            name="fk_deal_detections_config_revision_id",
+            ondelete="RESTRICT",
+        ),
     )
     tracked_product_id: Mapped[UUID | None] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
@@ -703,6 +1199,9 @@ class DealDetection(Base):
     deliveries: Mapped[list[NotificationDelivery]] = relationship(
         back_populates="detection",
         passive_deletes=True,
+    )
+    config_revision: Mapped[AdminConfigRevision | None] = relationship(
+        back_populates="detections",
     )
 
 

@@ -6,7 +6,7 @@ ofertas excepcionales y posibles errores de precio sin realizar compras.
 
 ## Estado actual
 
-Las Fases 1, 2 y 3 están implementadas para ejecución local:
+Las Fases 1, 2, 3, 4A y 4B están implementadas para ejecución local:
 
 1. Se registra una URL pública de producto.
 2. El registro de tiendas reconoce el dominio, elige el adapter habilitado y
@@ -27,6 +27,10 @@ Las Fases 1, 2 y 3 están implementadas para ejecución local:
 11. Telegram recibe las ofertas confirmadas cuando sus credenciales están
     configuradas.
 12. Un scheduler local ejecuta el ciclo completo sin solapar corridas.
+13. Una API administrativa autenticada permite gestionar productos, consultar
+    resultados, versionar la política y encolar rastreos.
+14. Un panel web responsive consume esa API para operar productos, ofertas,
+    tiendas, rastreos y configuración sin editar código.
 
 La primera prueba de la Fase 1 guardó correctamente una barra de sonido a
 `PEN 179.00`, con precio de lista `PEN 499.00`, disponibilidad y vendedor.
@@ -40,11 +44,12 @@ manualmente, un mínimo de 60 minutos y un máximo de 5 URLs por tienda y corrid
 Comparten un parser VTEX reutilizable, pero conservan política, dominios,
 vendedores, fixtures y pruebas propios.
 
-El detector de Fase 3, la confirmación, la deduplicación, Telegram y el scheduler
-ya están implementados. Las equivalencias entre tiendas son grupos creados y
-verificados manualmente: deben representar la misma marca, modelo y variante, y
-admiten como máximo una publicación por tienda. Aún no existen dashboard web,
-WhatsApp, Gmail ni despliegue permanente en un servidor.
+El detector de Fase 3, la confirmación, la deduplicación, Telegram, el scheduler,
+la API de Fase 4A y el panel de Fase 4B ya están implementados. Las equivalencias entre tiendas son
+grupos creados y verificados manualmente: deben representar la misma marca,
+modelo y variante, y admiten como máximo una publicación por tienda. Aún no
+Aún no existen WhatsApp, Gmail, autenticación multiusuario ni despliegue
+permanente en un servidor.
 
 Telegram es actualmente un canal de salida: envía alertas, pero todavía no
 responde `/start`, `/ofertas`, `Hola` ni otros comandos. El monitoreo continuo
@@ -81,7 +86,7 @@ uv sync --locked
 uv run bot-ofertas db upgrade
 ```
 
-El head actual de migraciones es `0008_conditioned_offers`.
+El head actual de migraciones es `0009_phase4_admin`.
 
 Comprueba el estado:
 
@@ -98,6 +103,31 @@ Para mantener el monitor activo después de comprobar el estado:
 ```bash
 uv run bot-ofertas run
 ```
+
+La API administrativa se inicia en una segunda terminal:
+
+```bash
+uv run bot-ofertas-api
+```
+
+Antes de iniciarla, configura `BOT_API_ADMIN_TOKEN` según
+[Operación de la Fase 4A](docs/phase4-api.md). Swagger queda disponible
+localmente en `http://127.0.0.1:8000/docs`.
+
+El panel de Fase 4B se inicia desde Windows PowerShell en una tercera terminal:
+
+```powershell
+cd C:\Users\TU_USUARIO_WINDOWS\Documents\Proyectos\bot-ofertas\dashboard
+$env:npm_config_script_shell='C:\Program Files\Git\bin\bash.exe'
+npm install
+npm run dev
+```
+
+Después abre `http://localhost:3000`, escribe
+`http://127.0.0.1:8000` como API y pega el valor real de
+`BOT_API_ADMIN_TOKEN`. El token solo permanece en memoria; al recargar la
+página se solicita nuevamente. La guía específica está en
+[`dashboard/README.md`](dashboard/README.md).
 
 En esta computadora PostgreSQL usa el puerto `5433` del host porque el `5432`
 ya estaba ocupado. El valor real se conserva en `.env`.
@@ -162,7 +192,9 @@ para el producto.
 La guía completa de configuración, Telegram, estados, deduplicación y
 recuperación está en [Operación de la Fase 1](docs/phase1-operations.md).
 La selección de variantes, equivalencias, confianza y segunda comprobación está
-en [Operación de la Fase 3](docs/phase3-operations.md).
+en [Operación de la Fase 3](docs/phase3-operations.md). La autenticación,
+endpoints, cola y configuración versionada están en
+[Operación de la Fase 4A](docs/phase4-api.md).
 
 Detener PostgreSQL sin perder el historial:
 
@@ -204,6 +236,7 @@ migraciones y las pruebas de integración con un PostgreSQL efímero en cada
 URL registrada
   -> StoreRegistry: detecta dominio y normaliza URL
   -> tracked_products
+  -> API: CRUD con ETag / cola crawl_jobs
   -> claim_due: lease PostgreSQL
   -> adapter/spider correspondiente
   -> normalización por SKU + vendedor
@@ -257,6 +290,10 @@ Tablas:
 - `offer_alert_states`: ventana de deduplicación por oferta exacta.
 - `notification_deliveries`: entregas Telegram, leases, intentos y errores
   sanitizados.
+- `admin_config_revisions`: revisiones inmutables y auditables de la política
+  operativa, sin secretos.
+- `crawl_jobs` y `crawl_job_items`: solicitudes manuales idempotentes, leases y
+  resultado por producto.
 
 El precio total y las cuotas son campos distintos: una cuota individual nunca se
 usa como precio total. Las condiciones de tarjeta o medio de pago, membresía,
@@ -326,8 +363,9 @@ uv run bot-ofertas config show
 
 ## Siguientes hitos
 
-La Fase 4 incorporará una API y un panel de administración para gestionar
-productos, tiendas, umbrales, historial y alertas. Después vendrán el
-descubrimiento controlado de productos y el escalamiento con colas y varios
-workers. WhatsApp y correo serán canales adicionales sobre el mismo contrato de
-notificaciones.
+Las Fases 4A y 4B ya proporcionan el backend administrativo y el panel local.
+La Fase 4C cerrará la experiencia operativa, autenticación multiusuario,
+permisos, observabilidad y pruebas del conjunto antes de cualquier publicación
+permanente. Después vendrán el descubrimiento controlado de productos y el
+escalamiento con varios workers. WhatsApp y correo serán canales adicionales
+sobre el mismo contrato de notificaciones.

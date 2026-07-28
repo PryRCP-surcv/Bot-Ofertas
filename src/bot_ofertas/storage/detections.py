@@ -40,6 +40,16 @@ _CLASSIFICATION_RANK = {
     DealClassification.EXCEPTIONAL_DEAL.value: 2,
     DealClassification.POSSIBLE_PRICE_ERROR.value: 3,
 }
+_LEGACY_POLICY_FINGERPRINT = "0" * 64
+
+
+def _normalized_policy_fingerprint(value: str) -> str:
+    normalized = value.strip().lower()
+    if len(normalized) != 64 or any(
+        character not in "0123456789abcdef" for character in normalized
+    ):
+        raise ValueError("policy_fingerprint must be a lowercase SHA-256 digest")
+    return normalized
 _CLASSIFICATION_SCORE = {
     DealClassification.NONE.value: 0,
     DealClassification.GOOD_DEAL.value: 55,
@@ -199,6 +209,8 @@ class DetectionRepository:
         self,
         *,
         detector_version: str,
+        policy_fingerprint: str = _LEGACY_POLICY_FINGERPRINT,
+        reanalyze_policy: bool = False,
         limit: int = 100,
     ) -> list[PriceObservationRecord]:
         if limit <= 0 or limit > 1_000:
@@ -206,14 +218,22 @@ class DetectionRepository:
         normalized_version = detector_version.strip()
         if not normalized_version:
             raise ValueError("detector_version must not be empty")
+        normalized_fingerprint = _normalized_policy_fingerprint(policy_fingerprint)
+        if not isinstance(reanalyze_policy, bool):
+            raise TypeError("reanalyze_policy must be a boolean")
+        processed_filters = [
+            DealDetection.observation_id == PriceObservationRecord.id,
+            DealDetection.detector_version == normalized_version,
+        ]
+        if reanalyze_policy:
+            processed_filters.append(
+                DealDetection.policy_fingerprint == normalized_fingerprint
+            )
         statement: Select[tuple[PriceObservationRecord]] = (
             select(PriceObservationRecord)
             .where(
                 ~exists(
-                    select(DealDetection.id).where(
-                        DealDetection.observation_id == PriceObservationRecord.id,
-                        DealDetection.detector_version == normalized_version,
-                    )
+                    select(DealDetection.id).where(*processed_filters)
                 )
             )
             .order_by(
@@ -441,6 +461,8 @@ class DetectionRepository:
         observation: PriceObservationRecord,
         decision: DetectionDecision,
         detector_version: str,
+        policy_fingerprint: str = _LEGACY_POLICY_FINGERPRINT,
+        config_revision_id: int | None = None,
         cooldown: timedelta,
         significant_improvement_ratio: Decimal,
         confirmation_required: bool = True,
@@ -456,6 +478,9 @@ class DetectionRepository:
         normalized_version = detector_version.strip()
         if not normalized_version:
             raise ValueError("detector_version must not be empty")
+        normalized_fingerprint = _normalized_policy_fingerprint(policy_fingerprint)
+        if config_revision_id is not None and config_revision_id <= 0:
+            raise ValueError("config_revision_id must be positive")
         if cooldown <= timedelta(0):
             raise ValueError("cooldown must be positive")
         if not Decimal("0") <= significant_improvement_ratio < Decimal("1"):
@@ -479,6 +504,7 @@ class DetectionRepository:
             select(DealDetection).where(
                 DealDetection.observation_id == observation.id,
                 DealDetection.detector_version == normalized_version,
+                DealDetection.policy_fingerprint == normalized_fingerprint,
             )
         )
         if existing is not None:
@@ -519,6 +545,7 @@ class DetectionRepository:
             minimum_interval=confirmation_minimum_interval,
             max_age=confirmation_max_age,
             price_tolerance_ratio=confirmation_price_tolerance_ratio,
+            policy_fingerprint=normalized_fingerprint,
             timestamp=timestamp,
         )
         confidence_score = min(
@@ -574,6 +601,8 @@ class DetectionRepository:
         detection = DealDetection(
             observation_id=observation.id,
             detector_version=normalized_version,
+            policy_fingerprint=normalized_fingerprint,
+            config_revision_id=config_revision_id,
             tracked_product_id=observation.tracked_product_id,
             offer_key=offer_key,
             classification=decision.classification.value,
@@ -603,6 +632,8 @@ class DetectionRepository:
                 "history_samples_used": decision.history_samples_used,
                 "history_samples_ignored": decision.history_samples_ignored,
                 "detector_version": normalized_version,
+                "policy_fingerprint": normalized_fingerprint,
+                "config_revision_id": config_revision_id,
                 "quality_flags": {
                     "informational": list(decision.informational_quality_flags),
                     "blocking": list(decision.blocking_quality_flags),
@@ -684,6 +715,7 @@ class DetectionRepository:
         minimum_interval: timedelta,
         max_age: timedelta,
         price_tolerance_ratio: Decimal,
+        policy_fingerprint: str,
         timestamp: datetime,
     ) -> _ConfirmationOutcome:
         if not decision.should_alert:
@@ -739,6 +771,36 @@ class DetectionRepository:
         )
         if state is None:  # pragma: no cover - insert/select share one transaction
             raise RuntimeError("confirmation state could not be acquired")
+        previous_detection = (
+            self._session.get(DealDetection, state.candidate_detection_id)
+            if state.candidate_detection_id is not None
+            else None
+        )
+        if (
+            previous_detection is not None
+            and previous_detection.policy_fingerprint != policy_fingerprint
+        ):
+            previous_observation_id = state.candidate_observation_id
+            previous_detection.confirmation_status = "replaced"
+            state.tracked_product_id = observation.tracked_product_id
+            state.candidate_observation_id = observation.id
+            state.candidate_detection_id = None
+            state.candidate_classification = decision.classification.value
+            state.candidate_price = price
+            state.confirmation_count = 1
+            state.first_seen_at = observation.observed_at
+            state.last_seen_at = observation.observed_at
+            state.expires_at = observation.observed_at + max_age
+            state.updated_at = timestamp
+            return _ConfirmationOutcome(
+                status="awaiting",
+                count=1,
+                reference_observation_id=previous_observation_id,
+                state=state,
+                state_tracks_current=True,
+                previous_detection=previous_detection,
+                previous_status="replaced",
+            )
         if state.candidate_observation_id == observation.id:
             return _ConfirmationOutcome(
                 status="awaiting",
@@ -750,11 +812,6 @@ class DetectionRepository:
         previous_observation = self._session.get(
             PriceObservationRecord,
             state.candidate_observation_id,
-        )
-        previous_detection = (
-            self._session.get(DealDetection, state.candidate_detection_id)
-            if state.candidate_detection_id is not None
-            else None
         )
         if previous_observation is None:  # pragma: no cover - protected by FK
             raise RuntimeError("confirmation observation no longer exists")
@@ -909,6 +966,8 @@ class DetectionRepository:
         *,
         observation: PriceObservationRecord,
         detector_version: str,
+        policy_fingerprint: str = _LEGACY_POLICY_FINGERPRINT,
+        config_revision_id: int | None = None,
         error_type: str,
         detected_at: datetime | None = None,
     ) -> DetectionSaveResult:
@@ -917,10 +976,14 @@ class DetectionRepository:
         normalized_version = detector_version.strip()
         if not normalized_version:
             raise ValueError("detector_version must not be empty")
+        normalized_fingerprint = _normalized_policy_fingerprint(policy_fingerprint)
+        if config_revision_id is not None and config_revision_id <= 0:
+            raise ValueError("config_revision_id must be positive")
         existing = self._session.scalar(
             select(DealDetection).where(
                 DealDetection.observation_id == observation.id,
                 DealDetection.detector_version == normalized_version,
+                DealDetection.policy_fingerprint == normalized_fingerprint,
             )
         )
         if existing is not None:
@@ -942,6 +1005,8 @@ class DetectionRepository:
         detection = DealDetection(
             observation_id=observation.id,
             detector_version=normalized_version,
+            policy_fingerprint=normalized_fingerprint,
+            config_revision_id=config_revision_id,
             tracked_product_id=observation.tracked_product_id,
             offer_key=error_key,
             classification=DealClassification.NONE.value,

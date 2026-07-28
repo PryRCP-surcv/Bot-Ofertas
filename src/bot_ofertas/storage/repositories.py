@@ -300,10 +300,13 @@ class TrackedProductRepository:
         )
         if product is None:
             return None
+        if active and product.archived_at is not None:
+            raise ValueError("an archived product cannot be activated")
         product.active = active
         if not active:
             product.lease_token = None
             product.lease_expires_at = None
+        product.version += 1
         product.updated_at = _utc()
         self._session.flush()
         return product
@@ -328,7 +331,10 @@ class TrackedProductRepository:
         )
         if product is None:
             return None
+        if product.archived_at is not None:
+            raise ValueError("an archived product cannot change variant")
         product.expected_variant = normalized_variant
+        product.version += 1
         product.updated_at = _utc()
         self._session.flush()
         return product
@@ -338,7 +344,10 @@ class TrackedProductRepository:
             raise ValueError("limit must be positive")
         statement: Select[tuple[TrackedProduct]] = (
             select(TrackedProduct)
-            .where(TrackedProduct.active.is_(True))
+            .where(
+                TrackedProduct.active.is_(True),
+                TrackedProduct.archived_at.is_(None),
+            )
             .order_by(TrackedProduct.last_checked_at.asc().nulls_first())
             .limit(limit)
         )
@@ -350,6 +359,7 @@ class TrackedProductRepository:
         limit: int = 100,
         force: bool = False,
         store_slugs: set[str] | list[str] | tuple[str, ...] | None = None,
+        product_ids: set[UUID] | list[UUID] | tuple[UUID, ...] | None = None,
         minimum_interval_minutes: int | None = None,
         lease_duration: timedelta = timedelta(minutes=15),
         now: datetime | None = None,
@@ -372,6 +382,20 @@ class TrackedProductRepository:
             or minimum_interval_minutes < 30
         ):
             raise ValueError("minimum_interval_minutes must be at least 30")
+        normalized_product_ids: set[UUID] | None = None
+        if product_ids is not None:
+            normalized_product_ids = set(product_ids)
+            if any(
+                not isinstance(product_id, UUID)
+                for product_id in normalized_product_ids
+            ):
+                raise TypeError("every product_id must be a UUID")
+            if not normalized_product_ids:
+                return ProductClaimBatch(
+                    token=uuid4(),
+                    products=(),
+                    expires_at=_utc(now) + lease_duration,
+                )
 
         timestamp = _utc(now)
         expires_at = timestamp + lease_duration
@@ -379,6 +403,7 @@ class TrackedProductRepository:
 
         statement: Select[tuple[TrackedProduct]] = select(TrackedProduct).where(
             TrackedProduct.active.is_(True),
+            TrackedProduct.archived_at.is_(None),
             or_(
                 TrackedProduct.lease_token.is_(None),
                 TrackedProduct.lease_expires_at <= timestamp,
@@ -402,6 +427,8 @@ class TrackedProductRepository:
                     expires_at=expires_at,
                 )
             statement = statement.where(TrackedProduct.store_slug.in_(normalized_store_slugs))
+        if normalized_product_ids is not None:
+            statement = statement.where(TrackedProduct.id.in_(normalized_product_ids))
 
         if not force:
             effective_interval = TrackedProduct.check_interval_minutes
@@ -478,6 +505,7 @@ class TrackedProductRepository:
         statement = select(TrackedProduct.id).where(
             TrackedProduct.id == product_id,
             TrackedProduct.active.is_(True),
+            TrackedProduct.archived_at.is_(None),
             TrackedProduct.store_slug == store_slug,
             TrackedProduct.source_url == source_url,
             TrackedProduct.lease_token == lease_token,

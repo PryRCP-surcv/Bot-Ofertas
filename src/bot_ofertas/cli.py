@@ -6,10 +6,12 @@ import argparse
 import subprocess
 import sys
 from collections import defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event, Thread
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -31,6 +33,8 @@ from bot_ofertas.services import (
     DetectionService,
     NotificationDispatcher,
 )
+from bot_ofertas.services.runtime_policy import resolve_runtime_policy
+from bot_ofertas.storage.admin import CrawlJobRepository
 from bot_ofertas.storage.config import DatabaseSettings
 from bot_ofertas.storage.database import (
     create_database_engine,
@@ -38,6 +42,9 @@ from bot_ofertas.storage.database import (
     session_scope,
 )
 from bot_ofertas.storage.models import (
+    CrawlJobItem,
+    CrawlJobItemStatus,
+    CrawlJobStatus,
     DealDetection,
     OfferConfirmationState,
     PriceObservationRecord,
@@ -63,6 +70,8 @@ _MAX_ANALYSIS_LIMIT = 1_000
 _DEFAULT_NOTIFICATION_LIMIT = 20
 _MAX_NOTIFICATION_LIMIT = 100
 _CRAWL_LEASE_DURATION = timedelta(hours=2)
+_CRAWL_JOB_LEASE_DURATION = timedelta(minutes=30)
+_CRAWL_JOB_HEARTBEAT_SECONDS = 60
 _CONDITION_FLAG_LABELS = {
     "conditional_card_price": "requiere tarjeta o medio de pago específico",
     "conditional_payment_method_price": "requiere tarjeta o medio de pago específico",
@@ -86,6 +95,26 @@ _CONDITION_FLAG_LABELS = {
 class _ClaimedProduct:
     product: TrackedProduct
     lease_token: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class _ClaimedCrawlJob:
+    job_id: UUID
+    lease_token: UUID
+    claimed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class _CrawlExecution:
+    status: int
+    attempted_product_ids: frozenset[UUID]
+    run_by_product: dict[UUID, UUID]
+
+
+@dataclass(frozen=True, slots=True)
+class _AdminJobHeartbeatState:
+    lease_lost: Event
+    cancel_requested: Event
 
 
 def _integer_between(minimum: int, maximum: int):
@@ -433,6 +462,18 @@ def _database_engine():
     return create_database_engine(settings)
 
 
+def _runtime_settings() -> RuntimeSettings:
+    """Load environment secrets plus the latest audited public policy."""
+
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    try:
+        with session_scope(factory) as session:
+            return resolve_runtime_policy(session).settings
+    finally:
+        engine.dispose()
+
+
 def _upgrade_database() -> int:
     # Loading settings here fails early with a concise message when .env is incomplete.
     DatabaseSettings.from_env()
@@ -447,7 +488,7 @@ def _upgrade_database() -> int:
 
 
 def _show_config() -> int:
-    settings = RuntimeSettings.from_env()
+    settings = _runtime_settings()
     print("Configuración efectiva de Fase 3:")
     print(f"- Detector: {settings.detector_version}")
     print(
@@ -744,6 +785,7 @@ def _claim_due_batches(
     force: bool,
     limit: int,
     adapters: tuple[StoreAdapter, ...],
+    product_ids: set[UUID] | None = None,
 ) -> list[ProductClaimBatch]:
     ordered_adapters = _rotated_adapters(adapters)
     engine = _database_engine()
@@ -765,6 +807,7 @@ def _claim_due_batches(
                     force=force,
                     limit=quota,
                     store_slugs={adapter.slug},
+                    product_ids=product_ids,
                     minimum_interval_minutes=adapter.policy.minimum_interval_minutes,
                     lease_duration=_CRAWL_LEASE_DURATION,
                 )
@@ -786,6 +829,7 @@ def _claim_due_batches(
                     force=force,
                     limit=quota,
                     store_slugs={adapter.slug},
+                    product_ids=product_ids,
                     minimum_interval_minutes=adapter.policy.minimum_interval_minutes,
                     lease_duration=_CRAWL_LEASE_DURATION,
                 )
@@ -828,7 +872,355 @@ def _active_store_pauses(store_slugs: frozenset[str]) -> list[StoreCrawlState]:
         engine.dispose()
 
 
+def _claim_admin_crawl_jobs(*, limit: int) -> list[_ClaimedCrawlJob]:
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    try:
+        with session_scope(factory) as session:
+            batch = CrawlJobRepository(session).claim_due(
+                worker_id="local-monitor",
+                limit=limit,
+                lease_duration=_CRAWL_JOB_LEASE_DURATION,
+            )
+            claimed: list[_ClaimedCrawlJob] = []
+            for job in batch.jobs:
+                if job.last_claimed_at is None:  # pragma: no cover - repository invariant
+                    raise RuntimeError("el trabajo reclamado no tiene fecha de inicio")
+                claimed.append(
+                    _ClaimedCrawlJob(
+                        job_id=job.id,
+                        lease_token=batch.token,
+                        claimed_at=job.last_claimed_at,
+                    )
+                )
+            return claimed
+    finally:
+        engine.dispose()
+
+
+def _prepare_admin_crawl_job(claim: _ClaimedCrawlJob) -> tuple[UUID, ...] | None:
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    try:
+        with session_scope(factory) as session:
+            repository = CrawlJobRepository(session)
+            job = repository.heartbeat(
+                claim.job_id,
+                token=claim.lease_token,
+                lease_duration=_CRAWL_JOB_LEASE_DURATION,
+            )
+            if job is None:
+                raise RuntimeError("se perdió el lease del trabajo de rastreo")
+            items = list(
+                session.scalars(
+                    select(CrawlJobItem)
+                    .where(CrawlJobItem.job_id == claim.job_id)
+                    .order_by(CrawlJobItem.id)
+                    .with_for_update()
+                )
+            )
+            timestamp = datetime.now(UTC)
+            if job.cancel_requested_at is not None:
+                for item in items:
+                    item.status = CrawlJobItemStatus.CANCELLED.value
+                    item.finished_at = timestamp
+                    item.updated_at = timestamp
+                completed = repository.complete(
+                    claim.job_id,
+                    token=claim.lease_token,
+                    status=CrawlJobStatus.CANCELLED,
+                    result={"cancelled_items": len(items)},
+                    now=timestamp,
+                )
+                if not completed:
+                    raise RuntimeError("se perdió el lease al cancelar el trabajo")
+                return None
+            attempt_items = [
+                item
+                for item in items
+                if item.status
+                in {
+                    CrawlJobItemStatus.QUEUED.value,
+                    CrawlJobItemStatus.FAILED.value,
+                }
+            ]
+            for item in attempt_items:
+                item.status = CrawlJobItemStatus.RUNNING.value
+                item.attempt_count += 1
+                item.started_at = item.started_at or timestamp
+                item.finished_at = None
+                item.last_error_code = None
+                item.last_error = None
+                item.updated_at = timestamp
+            session.flush()
+            return tuple(item.tracked_product_id for item in attempt_items)
+    finally:
+        engine.dispose()
+
+
+def _refresh_admin_crawl_job_lease(claim: _ClaimedCrawlJob) -> str:
+    """Renew a job lease in an independent transaction."""
+
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    try:
+        with session_scope(factory) as session:
+            job = CrawlJobRepository(session).heartbeat(
+                claim.job_id,
+                token=claim.lease_token,
+                lease_duration=_CRAWL_JOB_LEASE_DURATION,
+            )
+            if job is None:
+                return "lost"
+            return "cancelled" if job.cancel_requested_at is not None else "active"
+    finally:
+        engine.dispose()
+
+
+@contextmanager
+def _maintain_admin_crawl_job_lease(
+    claim: _ClaimedCrawlJob,
+) -> Iterator[_AdminJobHeartbeatState]:
+    """Keep ownership fenced while Scrapy blocks the main thread."""
+
+    stop = Event()
+    state = _AdminJobHeartbeatState(
+        lease_lost=Event(),
+        cancel_requested=Event(),
+    )
+
+    def renew() -> None:
+        while not stop.wait(_CRAWL_JOB_HEARTBEAT_SECONDS):
+            try:
+                lease_state = _refresh_admin_crawl_job_lease(claim)
+            except Exception:
+                state.lease_lost.set()
+                return
+            if lease_state == "lost":
+                state.lease_lost.set()
+                return
+            if lease_state == "cancelled":
+                state.cancel_requested.set()
+                return
+
+    thread = Thread(
+        target=renew,
+        name=f"crawl-job-heartbeat-{claim.job_id}",
+        daemon=True,
+    )
+    thread.start()
+    try:
+        yield state
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+
+
+def _finalize_admin_crawl_job(
+    claim: _ClaimedCrawlJob,
+    *,
+    execution_error: bool,
+    attempted_product_ids: frozenset[UUID],
+    run_by_product: dict[UUID, UUID],
+) -> CrawlJobStatus:
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    try:
+        with session_scope(factory) as session:
+            repository = CrawlJobRepository(session)
+            job = repository.heartbeat(
+                claim.job_id,
+                token=claim.lease_token,
+                lease_duration=_CRAWL_JOB_LEASE_DURATION,
+            )
+            if job is None:
+                raise RuntimeError("se perdió el lease al finalizar el trabajo")
+            items = list(
+                session.scalars(
+                    select(CrawlJobItem)
+                    .where(CrawlJobItem.job_id == claim.job_id)
+                    .order_by(CrawlJobItem.id)
+                    .with_for_update()
+                )
+            )
+            products = {
+                product.id: product
+                for product in session.scalars(
+                    select(TrackedProduct).where(
+                        TrackedProduct.id.in_(
+                            tuple(item.tracked_product_id for item in items)
+                        )
+                    )
+                )
+            }
+            timestamp = datetime.now(UTC)
+            cancelled = job.cancel_requested_at is not None
+            counts = {
+                "succeeded": 0,
+                "failed": 0,
+                "skipped": 0,
+                "cancelled": 0,
+            }
+            for item in items:
+                product = products.get(item.tracked_product_id)
+                if cancelled:
+                    if item.status in {
+                        CrawlJobItemStatus.QUEUED.value,
+                        CrawlJobItemStatus.RUNNING.value,
+                    }:
+                        item.status = CrawlJobItemStatus.CANCELLED.value
+                        item.finished_at = timestamp
+                        item.updated_at = timestamp
+                    counts[item.status] += 1
+                    continue
+                if item.status != CrawlJobItemStatus.RUNNING.value:
+                    counts[item.status] += 1
+                    continue
+
+                item.crawl_run_id = run_by_product.get(item.tracked_product_id)
+                item.finished_at = timestamp
+                item.updated_at = timestamp
+                if execution_error:
+                    item.status = CrawlJobItemStatus.FAILED.value
+                    item.last_error_code = "crawl_worker_error"
+                    item.last_error = "el proceso de rastreo no pudo completar el lote"
+                    counts["failed"] += 1
+                elif (
+                    product is not None
+                    and product.last_success_at is not None
+                    and product.last_success_at >= claim.claimed_at
+                ):
+                    item.status = CrawlJobItemStatus.SUCCEEDED.value
+                    counts["succeeded"] += 1
+                elif (
+                    product is not None
+                    and product.last_checked_at is not None
+                    and product.last_checked_at >= claim.claimed_at
+                ):
+                    item.status = CrawlJobItemStatus.FAILED.value
+                    item.last_error_code = "crawl_failed"
+                    item.last_error = "la tienda no produjo una observación válida"
+                    counts["failed"] += 1
+                elif item.tracked_product_id in attempted_product_ids:
+                    item.status = CrawlJobItemStatus.FAILED.value
+                    item.last_error_code = "crawl_no_result"
+                    item.last_error = (
+                        "el producto fue enviado al spider sin resultado verificable"
+                    )
+                    counts["failed"] += 1
+                else:
+                    item.status = CrawlJobItemStatus.SKIPPED.value
+                    item.result = {"reason": "not_due_leased_or_store_paused"}
+                    counts["skipped"] += 1
+
+            if cancelled:
+                final_status = CrawlJobStatus.CANCELLED
+            elif counts["failed"] and job.attempt_count < job.max_attempts:
+                final_status = CrawlJobStatus.RETRYING
+            elif counts["failed"] and counts["succeeded"]:
+                final_status = CrawlJobStatus.PARTIAL
+            elif counts["failed"]:
+                final_status = CrawlJobStatus.FAILED
+            elif counts["skipped"]:
+                final_status = CrawlJobStatus.PARTIAL
+            else:
+                final_status = CrawlJobStatus.SUCCEEDED
+            completed = repository.complete(
+                claim.job_id,
+                token=claim.lease_token,
+                status=final_status,
+                result=counts,
+                error_code=(
+                    "crawl_worker_error"
+                    if execution_error
+                    else "crawl_failed"
+                    if counts["failed"]
+                    else "targets_deferred"
+                    if counts["skipped"]
+                    else None
+                ),
+                error=(
+                    "uno o más productos no pudieron rastrearse"
+                    if counts["failed"]
+                    else "uno o más productos se omitieron por límites operativos"
+                    if counts["skipped"]
+                    else None
+                ),
+                retry_at=(
+                    timestamp
+                    + timedelta(
+                        seconds=min(
+                            300 * (2 ** max(job.attempt_count - 1, 0)),
+                            3_600,
+                        )
+                    )
+                    if final_status is CrawlJobStatus.RETRYING
+                    else None
+                ),
+                now=timestamp,
+            )
+            if not completed:
+                raise RuntimeError("se perdió el lease al guardar el resultado")
+            return final_status
+    finally:
+        engine.dispose()
+
+
 def _crawl(args: argparse.Namespace) -> int:
+    if not getattr(args, "process_admin_jobs", False):
+        return _execute_crawl(args).status
+
+    claims = _claim_admin_crawl_jobs(limit=1)
+    if not claims:
+        return _execute_crawl(args).status
+
+    claim = claims[0]
+    product_ids = _prepare_admin_crawl_job(claim)
+    if product_ids is None:
+        print(f"Trabajo administrativo {claim.job_id}: cancelado.")
+        return 0
+
+    execution = _CrawlExecution(
+        status=1,
+        attempted_product_ids=frozenset(),
+        run_by_product={},
+    )
+    execution_error = False
+    try:
+        with _maintain_admin_crawl_job_lease(claim) as heartbeat:
+            execution = _execute_crawl(
+                argparse.Namespace(
+                    force=False,
+                    limit=min(len(product_ids), _MAX_CRAWL_LIMIT),
+                    product_ids=set(product_ids),
+                )
+            )
+            if heartbeat.lease_lost.is_set():
+                raise RuntimeError("se perdió el lease durante el rastreo")
+    except Exception as error:
+        execution_error = True
+        print(
+            f"Error en trabajo administrativo {claim.job_id} "
+            f"({type(error).__name__}).",
+            file=sys.stderr,
+        )
+
+    final_status = _finalize_admin_crawl_job(
+        claim,
+        execution_error=execution_error,
+        attempted_product_ids=execution.attempted_product_ids,
+        run_by_product=execution.run_by_product,
+    )
+    print(f"Trabajo administrativo {claim.job_id}: estado={final_status.value}.")
+    final_code = (
+        1
+        if final_status in {CrawlJobStatus.FAILED, CrawlJobStatus.PARTIAL}
+        else 0
+    )
+    return max(execution.status, final_code)
+
+
+def _execute_crawl(args: argparse.Namespace) -> _CrawlExecution:
     registry = get_store_registry()
     for plugin_error in registry.plugin_errors:
         print(
@@ -843,6 +1235,7 @@ def _crawl(args: argparse.Namespace) -> int:
         force=args.force,
         limit=args.limit,
         adapters=enabled_adapters,
+        product_ids=getattr(args, "product_ids", None),
     )
     claimed_products = [
         _ClaimedProduct(product=product, lease_token=batch.token)
@@ -861,12 +1254,12 @@ def _crawl(args: argparse.Namespace) -> int:
                     f"({pause.pause_reason})"
                 )
             print("La opción --force tampoco omite una pausa de seguridad.")
-            return 0
+            return _CrawlExecution(0, frozenset(), {})
         if args.force:
             print("No hay productos activos de tiendas habilitadas para consultar.")
         else:
             print("No hay productos pendientes según su intervalo.")
-        return 0
+        return _CrawlExecution(0, frozenset(), {})
 
     products_by_store: dict[str, list[_ClaimedProduct]] = defaultdict(list)
     for claimed_product in claimed_products:
@@ -877,7 +1270,7 @@ def _crawl(args: argparse.Namespace) -> int:
         f"{len(claimed_products)} producto(s) en {len(products_by_store)} tienda(s)..."
     )
 
-    crawlers: list[tuple[str, Any]] = []
+    crawlers: list[tuple[str, Any, tuple[UUID, ...]]] = []
     try:
         scrapy_settings = Settings()
         scrapy_settings.setmodule(crawling_settings, priority="project")
@@ -899,7 +1292,13 @@ def _crawl(args: argparse.Namespace) -> int:
             ]
             crawler = process.create_crawler(adapter.spider_class)
             process.crawl(crawler, targets=targets)
-            crawlers.append((adapter.display_name, crawler))
+            crawlers.append(
+                (
+                    adapter.display_name,
+                    crawler,
+                    tuple(claimed.product.id for claimed in store_claims),
+                )
+            )
 
         process.start()
     finally:
@@ -910,7 +1309,8 @@ def _crawl(args: argparse.Namespace) -> int:
     succeeded = True
     total_persisted = 0
     total_errors = 0
-    for display_name, crawler in crawlers:
+    run_by_product: dict[UUID, UUID] = {}
+    for display_name, crawler, product_ids in crawlers:
         status = str(crawler.stats.get_value("bot_ofertas/run_status", "unknown"))
         persisted = int(crawler.stats.get_value("bot_ofertas/persisted_observations", 0) or 0)
         errors = int(crawler.stats.get_value("bot_ofertas/error_count", 0) or 0)
@@ -922,11 +1322,25 @@ def _crawl(args: argparse.Namespace) -> int:
         print(f"{display_name}: estado={status}, observaciones={persisted}, errores={errors}.")
         if run_id:
             print(f"  Corrida: {run_id}")
+            try:
+                parsed_run_id = UUID(str(run_id))
+            except ValueError:
+                parsed_run_id = None
+            if parsed_run_id is not None:
+                run_by_product.update(
+                    (product_id, parsed_run_id) for product_id in product_ids
+                )
         if paused_until:
             print(f"  Tienda pausada automáticamente hasta: {paused_until}")
 
     print(f"Consulta terminada: observaciones={total_persisted}, errores={total_errors}.")
-    return 0 if succeeded else 1
+    return _CrawlExecution(
+        status=0 if succeeded else 1,
+        attempted_product_ids=frozenset(
+            claimed.product.id for claimed in claimed_products
+        ),
+        run_by_product=run_by_product,
+    )
 
 
 def _history(limit: int) -> int:
@@ -982,7 +1396,7 @@ def _history(limit: int) -> int:
 
 
 def _analyze(limit: int) -> int:
-    settings = RuntimeSettings.from_env()
+    settings = _runtime_settings()
     engine = _database_engine()
     factory = create_session_factory(engine)
     counters = {
@@ -1026,7 +1440,7 @@ def _analyze(limit: int) -> int:
 
 
 def _notify(limit: int) -> int:
-    settings = RuntimeSettings.from_env()
+    settings = _runtime_settings()
     notifier = TelegramNotifier(
         token=settings.telegram_token,
         chat_id=settings.telegram_chat_id,
@@ -1192,7 +1606,13 @@ def _cycle(args: argparse.Namespace) -> int:
     print("=== Rastreo ===")
     crawl_status = _isolated_cycle_stage(
         "rastreo",
-        lambda: _crawl(argparse.Namespace(force=False, limit=args.crawl_limit)),
+        lambda: _crawl(
+            argparse.Namespace(
+                force=False,
+                limit=args.crawl_limit,
+                process_admin_jobs=True,
+            )
+        ),
     )
     print()
     print("=== Detección ===")
@@ -1233,7 +1653,7 @@ def _run_monitor(args: argparse.Namespace) -> int:
     if args.once:
         return _cycle(args)
 
-    settings = RuntimeSettings.from_env()
+    settings = _runtime_settings()
     poll_seconds = args.poll_seconds or settings.scheduler_poll_seconds
     command_line = [
         sys.executable,

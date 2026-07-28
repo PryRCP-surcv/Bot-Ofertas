@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -50,6 +50,7 @@ class DetectionService:
         repository = DetectionRepository(self._session)
         observations = repository.unprocessed_observations(
             detector_version=self._settings.detector_version,
+            policy_fingerprint=self._settings.policy_fingerprint,
             limit=limit,
         )
         counters = {
@@ -114,6 +115,8 @@ class DetectionService:
                         observation=record,
                         decision=decision,
                         detector_version=self._settings.detector_version,
+                        policy_fingerprint=self._settings.policy_fingerprint,
+                        config_revision_id=self._settings.policy_revision_id,
                         cooldown=timedelta(hours=self._settings.alert_cooldown_hours),
                         significant_improvement_ratio=(
                             self._settings.alert_significant_improvement_ratio
@@ -137,6 +140,8 @@ class DetectionService:
                     result = repository.save_processing_error(
                         observation=record,
                         detector_version=self._settings.detector_version,
+                        policy_fingerprint=self._settings.policy_fingerprint,
+                        config_revision_id=self._settings.policy_revision_id,
                         error_type=type(error).__name__,
                     )
                 if result.inserted:
@@ -173,6 +178,8 @@ def _learn_first_variant(
 ) -> None:
     if tracked_product is not None and not tracked_product.expected_variant and observation.variant:
         tracked_product.expected_variant = canonicalize_variant(observation.variant)
+        tracked_product.version += 1
+        tracked_product.updated_at = datetime.now(UTC)
 
 
 def _expected_context(

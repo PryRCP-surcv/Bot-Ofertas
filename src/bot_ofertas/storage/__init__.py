@@ -1,5 +1,14 @@
 """PostgreSQL persistence adapters."""
 
+from bot_ofertas.storage.admin import (
+    CrawlJobClaimBatch,
+    CrawlJobEnqueueResult,
+    CrawlJobRepository,
+    IdempotencyConflictError,
+    LeaseLostError,
+    OptimisticConcurrencyError,
+    RuntimePolicyRepository,
+)
 from bot_ofertas.storage.config import DatabaseSettings
 from bot_ofertas.storage.database import (
     create_database_engine,
@@ -7,7 +16,12 @@ from bot_ofertas.storage.database import (
     session_scope,
 )
 from bot_ofertas.storage.models import (
+    AdminConfigRevision,
     Base,
+    CrawlJob,
+    CrawlJobItem,
+    CrawlJobItemStatus,
+    CrawlJobStatus,
     CrawlRun,
     CrawlRunStatus,
     DealDetection,
@@ -27,14 +41,25 @@ from bot_ofertas.storage.repositories import (
 )
 
 __all__ = [
+    "AdminConfigRevision",
     "Base",
+    "CrawlJob",
+    "CrawlJobClaimBatch",
+    "CrawlJobEnqueueResult",
+    "CrawlJobItem",
+    "CrawlJobItemStatus",
+    "CrawlJobRepository",
+    "CrawlJobStatus",
     "CrawlRun",
     "CrawlRunRepository",
     "CrawlRunStatus",
     "DatabaseSettings",
     "DealDetection",
+    "IdempotencyConflictError",
+    "LeaseLostError",
     "NotificationDelivery",
     "OfferAlertState",
+    "OptimisticConcurrencyError",
     "PriceObservationRecord",
     "PriceObservationRepository",
     "ProductClaimBatch",
@@ -43,6 +68,7 @@ __all__ = [
     "StoreCrawlStateRepository",
     "TrackedProduct",
     "TrackedProductRepository",
+    "RuntimePolicyRepository",
     "create_database_engine",
     "create_session_factory",
     "session_scope",

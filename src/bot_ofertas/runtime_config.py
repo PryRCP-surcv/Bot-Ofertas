@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -12,6 +15,42 @@ from dotenv import load_dotenv
 from bot_ofertas.detection import DetectorConfig, SignalThresholds
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_EDITABLE_POLICY_KEYS = frozenset(
+    {
+        "scheduler_poll_seconds",
+        "detection_history_limit",
+        "detection_history_days",
+        "equivalent_max_age_hours",
+        "equivalent_limit",
+        "confirmation_required",
+        "confirmation_max_age_minutes",
+        "confirmation_price_tolerance_percent",
+        "confirmation_confidence_bonus",
+        "minimum_alert_confidence",
+        "alert_cooldown_hours",
+        "alert_significant_improvement_percent",
+        "notification_lease_seconds",
+        "notification_max_attempts",
+        "notification_retry_base_seconds",
+        "telegram_enabled",
+        "minimum_history_samples",
+        "minimum_equivalent_samples",
+        "possible_error_minimum_corroborating_signals",
+        "possible_error_minimum_confidence",
+        "good_deal_percent",
+        "exceptional_deal_percent",
+        "possible_price_error_percent",
+    }
+)
+_DETECTION_POLICY_KEYS = _EDITABLE_POLICY_KEYS.difference(
+    {
+        "scheduler_poll_seconds",
+        "notification_lease_seconds",
+        "notification_max_attempts",
+        "notification_retry_base_seconds",
+        "telegram_enabled",
+    }
+)
 
 
 def _integer(name: str, default: int, *, minimum: int, maximum: int) -> int:
@@ -57,6 +96,59 @@ def _required_text(name: str, default: str) -> str:
     return value
 
 
+def _percent_text(value: Decimal) -> str:
+    rendered = format(value * Decimal("100"), "f")
+    return rendered.rstrip("0").rstrip(".") if "." in rendered else rendered
+
+
+def _mapping_integer(
+    values: Mapping[str, object],
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    raw_value = values.get(name, default)
+    if isinstance(raw_value, bool):
+        raise ValueError(f"{name} debe ser un número entero")
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} debe ser un número entero") from exc
+    if value != raw_value and not isinstance(raw_value, str):
+        raise ValueError(f"{name} debe ser un número entero")
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} debe estar entre {minimum} y {maximum}")
+    return value
+
+
+def _mapping_boolean(
+    values: Mapping[str, object],
+    name: str,
+    default: bool,
+) -> bool:
+    raw_value = values.get(name, default)
+    if not isinstance(raw_value, bool):
+        raise ValueError(f"{name} debe ser true o false")
+    return raw_value
+
+
+def _mapping_ratio(
+    values: Mapping[str, object],
+    name: str,
+    default: Decimal,
+) -> Decimal:
+    raw_value = values.get(name, _percent_text(default))
+    try:
+        percentage = Decimal(str(raw_value))
+    except InvalidOperation as exc:
+        raise ValueError(f"{name} debe ser un porcentaje decimal") from exc
+    if not percentage.is_finite() or not Decimal("0") <= percentage < Decimal("100"):
+        raise ValueError(f"{name} debe estar entre 0 y menos de 100")
+    return percentage / Decimal("100")
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeSettings:
     """Operational settings whose defaults are safe for the local Phase 3 monitor."""
@@ -80,6 +172,7 @@ class RuntimeSettings:
     telegram_token: str | None = field(default=None, repr=False)
     telegram_chat_id: str | None = None
     telegram_enabled: bool = True
+    policy_revision_id: int | None = None
     detector_config: DetectorConfig = field(default_factory=DetectorConfig)
 
     @classmethod
@@ -216,6 +309,245 @@ class RuntimeSettings:
                 historical_minimum_thresholds=thresholds,
                 list_price_thresholds=thresholds,
             ),
+        )
+
+    def public_policy(self) -> dict[str, int | bool | str]:
+        """Return the complete editable policy without any credentials."""
+
+        thresholds = self.detector_config.list_price_thresholds
+        return {
+            "scheduler_poll_seconds": self.scheduler_poll_seconds,
+            "detection_history_limit": self.detection_history_limit,
+            "detection_history_days": self.detection_history_days,
+            "equivalent_max_age_hours": self.equivalent_max_age_hours,
+            "equivalent_limit": self.equivalent_limit,
+            "confirmation_required": self.confirmation_required,
+            "confirmation_max_age_minutes": self.confirmation_max_age_minutes,
+            "confirmation_price_tolerance_percent": _percent_text(
+                self.confirmation_price_tolerance_ratio
+            ),
+            "confirmation_confidence_bonus": self.confirmation_confidence_bonus,
+            "minimum_alert_confidence": self.minimum_alert_confidence,
+            "alert_cooldown_hours": self.alert_cooldown_hours,
+            "alert_significant_improvement_percent": _percent_text(
+                self.alert_significant_improvement_ratio
+            ),
+            "notification_lease_seconds": self.notification_lease_seconds,
+            "notification_max_attempts": self.notification_max_attempts,
+            "notification_retry_base_seconds": self.notification_retry_base_seconds,
+            "telegram_enabled": self.telegram_enabled,
+            "minimum_history_samples": self.detector_config.minimum_history_samples,
+            "minimum_equivalent_samples": (
+                self.detector_config.minimum_equivalent_samples
+            ),
+            "possible_error_minimum_corroborating_signals": (
+                self.detector_config.possible_error_minimum_corroborating_signals
+            ),
+            "possible_error_minimum_confidence": (
+                self.detector_config.possible_error_minimum_confidence
+            ),
+            "good_deal_percent": _percent_text(thresholds.good_deal),
+            "exceptional_deal_percent": _percent_text(
+                thresholds.exceptional_deal
+            ),
+            "possible_price_error_percent": _percent_text(
+                thresholds.possible_price_error
+            ),
+        }
+
+    @property
+    def policy_fingerprint(self) -> str:
+        """Hash only settings that can change a persisted detection decision."""
+
+        public_policy = self.public_policy()
+        decision_policy = {
+            key: public_policy[key] for key in sorted(_DETECTION_POLICY_KEYS)
+        }
+        decision_policy["detector_version"] = self.detector_version
+        payload = json.dumps(
+            decision_policy,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def with_policy_overrides(
+        self,
+        overrides: Mapping[str, object],
+        *,
+        revision_id: int | None = None,
+    ) -> RuntimeSettings:
+        """Apply a validated non-secret policy snapshot to environment defaults."""
+
+        unknown = sorted(set(overrides).difference(_EDITABLE_POLICY_KEYS))
+        if unknown:
+            raise ValueError(
+                "configuración no editable o desconocida: " + ", ".join(unknown)
+            )
+        current = self.public_policy()
+        current.update(overrides)
+
+        thresholds = SignalThresholds(
+            good_deal=_mapping_ratio(
+                current,
+                "good_deal_percent",
+                self.detector_config.list_price_thresholds.good_deal,
+            ),
+            exceptional_deal=_mapping_ratio(
+                current,
+                "exceptional_deal_percent",
+                self.detector_config.list_price_thresholds.exceptional_deal,
+            ),
+            possible_price_error=_mapping_ratio(
+                current,
+                "possible_price_error_percent",
+                self.detector_config.list_price_thresholds.possible_price_error,
+            ),
+        )
+        detector_config = replace(
+            self.detector_config,
+            minimum_history_samples=_mapping_integer(
+                current,
+                "minimum_history_samples",
+                self.detector_config.minimum_history_samples,
+                minimum=1,
+                maximum=100,
+            ),
+            minimum_equivalent_samples=_mapping_integer(
+                current,
+                "minimum_equivalent_samples",
+                self.detector_config.minimum_equivalent_samples,
+                minimum=1,
+                maximum=20,
+            ),
+            possible_error_minimum_corroborating_signals=_mapping_integer(
+                current,
+                "possible_error_minimum_corroborating_signals",
+                self.detector_config.possible_error_minimum_corroborating_signals,
+                minimum=2,
+                maximum=8,
+            ),
+            possible_error_minimum_confidence=_mapping_integer(
+                current,
+                "possible_error_minimum_confidence",
+                self.detector_config.possible_error_minimum_confidence,
+                minimum=0,
+                maximum=100,
+            ),
+            previous_price_thresholds=thresholds,
+            historical_median_thresholds=thresholds,
+            historical_minimum_thresholds=thresholds,
+            list_price_thresholds=thresholds,
+        )
+        return replace(
+            self,
+            scheduler_poll_seconds=_mapping_integer(
+                current,
+                "scheduler_poll_seconds",
+                self.scheduler_poll_seconds,
+                minimum=30,
+                maximum=86_400,
+            ),
+            detection_history_limit=_mapping_integer(
+                current,
+                "detection_history_limit",
+                self.detection_history_limit,
+                minimum=3,
+                maximum=10_000,
+            ),
+            detection_history_days=_mapping_integer(
+                current,
+                "detection_history_days",
+                self.detection_history_days,
+                minimum=30,
+                maximum=3_650,
+            ),
+            equivalent_max_age_hours=_mapping_integer(
+                current,
+                "equivalent_max_age_hours",
+                self.equivalent_max_age_hours,
+                minimum=1,
+                maximum=720,
+            ),
+            equivalent_limit=_mapping_integer(
+                current,
+                "equivalent_limit",
+                self.equivalent_limit,
+                minimum=2,
+                maximum=100,
+            ),
+            confirmation_required=_mapping_boolean(
+                current,
+                "confirmation_required",
+                self.confirmation_required,
+            ),
+            confirmation_max_age_minutes=_mapping_integer(
+                current,
+                "confirmation_max_age_minutes",
+                self.confirmation_max_age_minutes,
+                minimum=30,
+                maximum=10_080,
+            ),
+            confirmation_price_tolerance_ratio=_mapping_ratio(
+                current,
+                "confirmation_price_tolerance_percent",
+                self.confirmation_price_tolerance_ratio,
+            ),
+            confirmation_confidence_bonus=_mapping_integer(
+                current,
+                "confirmation_confidence_bonus",
+                self.confirmation_confidence_bonus,
+                minimum=0,
+                maximum=100,
+            ),
+            minimum_alert_confidence=_mapping_integer(
+                current,
+                "minimum_alert_confidence",
+                self.minimum_alert_confidence,
+                minimum=0,
+                maximum=100,
+            ),
+            alert_cooldown_hours=_mapping_integer(
+                current,
+                "alert_cooldown_hours",
+                self.alert_cooldown_hours,
+                minimum=1,
+                maximum=720,
+            ),
+            alert_significant_improvement_ratio=_mapping_ratio(
+                current,
+                "alert_significant_improvement_percent",
+                self.alert_significant_improvement_ratio,
+            ),
+            notification_lease_seconds=_mapping_integer(
+                current,
+                "notification_lease_seconds",
+                self.notification_lease_seconds,
+                minimum=30,
+                maximum=3_600,
+            ),
+            notification_max_attempts=_mapping_integer(
+                current,
+                "notification_max_attempts",
+                self.notification_max_attempts,
+                minimum=1,
+                maximum=20,
+            ),
+            notification_retry_base_seconds=_mapping_integer(
+                current,
+                "notification_retry_base_seconds",
+                self.notification_retry_base_seconds,
+                minimum=30,
+                maximum=86_400,
+            ),
+            telegram_enabled=_mapping_boolean(
+                current,
+                "telegram_enabled",
+                self.telegram_enabled,
+            ),
+            policy_revision_id=revision_id,
+            detector_config=detector_config,
         )
 
 

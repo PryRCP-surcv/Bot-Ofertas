@@ -180,3 +180,77 @@ def test_runtime_settings_reject_invalid_phase3_non_integer_policy(
 
     with pytest.raises(RuntimeError, match=name):
         RuntimeSettings.from_env()
+
+
+def test_runtime_policy_snapshot_excludes_credentials_and_is_canonical() -> None:
+    settings = RuntimeSettings(
+        telegram_token="never-expose-token",
+        telegram_chat_id="never-expose-chat",
+    )
+
+    policy = settings.public_policy()
+
+    assert policy["good_deal_percent"] == "20"
+    assert policy["exceptional_deal_percent"] == "40"
+    assert policy["possible_price_error_percent"] == "70"
+    assert "telegram_token" not in policy
+    assert "telegram_chat_id" not in policy
+    assert len(settings.policy_fingerprint) == 64
+    assert settings.policy_fingerprint == RuntimeSettings().policy_fingerprint
+
+
+def test_runtime_policy_overrides_are_validated_and_revisioned() -> None:
+    base = RuntimeSettings()
+
+    updated = base.with_policy_overrides(
+        {
+            "good_deal_percent": "25",
+            "exceptional_deal_percent": "50",
+            "possible_price_error_percent": "80",
+            "minimum_history_samples": 5,
+            "telegram_enabled": False,
+        },
+        revision_id=7,
+    )
+
+    thresholds = updated.detector_config.list_price_thresholds
+    assert thresholds.good_deal == Decimal("0.25")
+    assert thresholds.exceptional_deal == Decimal("0.50")
+    assert thresholds.possible_price_error == Decimal("0.80")
+    assert updated.detector_config.minimum_history_samples == 5
+    assert updated.telegram_enabled is False
+    assert updated.policy_revision_id == 7
+    assert updated.policy_fingerprint != base.policy_fingerprint
+
+
+def test_non_detection_policy_does_not_change_detection_fingerprint() -> None:
+    base = RuntimeSettings()
+
+    updated = base.with_policy_overrides(
+        {
+            "scheduler_poll_seconds": 900,
+            "notification_retry_base_seconds": 600,
+            "telegram_enabled": False,
+        }
+    )
+
+    assert updated.policy_fingerprint == base.policy_fingerprint
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"database_password": "not-editable"},
+        {"confirmation_required": "yes"},
+        {"minimum_history_samples": True},
+        {
+            "good_deal_percent": "80",
+            "exceptional_deal_percent": "40",
+        },
+    ],
+)
+def test_runtime_policy_rejects_unknown_or_invalid_overrides(
+    overrides: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        RuntimeSettings().with_policy_overrides(overrides)

@@ -1,0 +1,437 @@
+"""Versioned request and response contracts for the administration API."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from decimal import Decimal
+from uuid import UUID
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    field_validator,
+    model_validator,
+)
+
+from bot_ofertas.detection import canonicalize_variant
+
+
+class ApiModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+
+class Page[ItemT](ApiModel):
+    items: list[ItemT]
+    limit: int = Field(ge=1, le=100)
+    has_more: bool
+    next_cursor: str | None = None
+
+
+class HealthRead(ApiModel):
+    status: str
+    service: str = "bot-ofertas-api"
+    database: str | None = None
+
+
+def _normalize_variant(value: dict[str, str]) -> dict[str, str]:
+    if len(value) > 20:
+        raise ValueError("expected_variant admite como máximo 20 atributos")
+    normalized: dict[str, str] = {}
+    for raw_key, raw_value in value.items():
+        key = " ".join(raw_key.split())
+        variant_value = " ".join(raw_value.split())
+        if not key or not variant_value:
+            raise ValueError("las claves y valores de expected_variant no pueden estar vacíos")
+        if len(key) > 100 or len(variant_value) > 300:
+            raise ValueError("expected_variant contiene una clave o valor demasiado largo")
+        normalized[key] = variant_value
+    try:
+        return canonicalize_variant(normalized)
+    except ValueError as error:
+        raise ValueError(
+            "expected_variant contiene atributos duplicados tras normalizar"
+        ) from error
+
+
+class StoreRead(ApiModel):
+    slug: str
+    display_name: str
+    hosts: list[str]
+    enabled: bool
+    minimum_interval_minutes: int
+    max_targets_per_run: int
+    requires_explicit_product_url: bool
+    notes: str
+    health: str
+    paused_until: datetime | None = None
+    pause_reason: str | None = None
+    consecutive_blocks: int = 0
+    tracked_products: int = 0
+    active_products: int = 0
+    last_run_id: UUID | None = None
+    last_run_status: str | None = None
+    last_run_started_at: datetime | None = None
+    last_run_finished_at: datetime | None = None
+
+
+class ProductCreate(ApiModel):
+    url: HttpUrl
+    label: str = Field(min_length=1, max_length=500)
+    expected_brand: str | None = Field(default=None, max_length=200)
+    expected_model: str | None = Field(default=None, max_length=300)
+    expected_variant: dict[str, str] = Field(default_factory=dict)
+    expected_is_accessory: bool = False
+    check_interval_minutes: int = Field(default=60, ge=30, le=525_600)
+    active: bool = True
+
+    @field_validator("label")
+    @classmethod
+    def normalize_label(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("label no puede estar vacío")
+        return normalized
+
+    @field_validator("expected_brand", "expected_model")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        return normalized or None
+
+    @field_validator("expected_variant")
+    @classmethod
+    def normalize_variant(cls, value: dict[str, str]) -> dict[str, str]:
+        return _normalize_variant(value)
+
+
+class ProductPatch(ApiModel):
+    label: str | None = Field(default=None, min_length=1, max_length=500)
+    expected_brand: str | None = Field(default=None, max_length=200)
+    expected_model: str | None = Field(default=None, max_length=300)
+    expected_is_accessory: bool | None = None
+    check_interval_minutes: int | None = Field(default=None, ge=30, le=525_600)
+
+    @model_validator(mode="after")
+    def require_change(self) -> ProductPatch:
+        if not self.model_fields_set:
+            raise ValueError("se requiere al menos un campo para actualizar")
+        return self
+
+    @field_validator("label")
+    @classmethod
+    def normalize_optional_label(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("label no puede estar vacío")
+        return normalized
+
+    @field_validator("expected_brand", "expected_model")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        return normalized or None
+
+
+class ProductRead(ApiModel):
+    id: UUID
+    store_slug: str
+    source_url: str
+    label: str
+    expected_brand: str | None
+    expected_model: str | None
+    expected_variant: dict[str, str]
+    expected_is_accessory: bool
+    active: bool
+    version: int
+    archived_at: datetime | None
+    check_interval_minutes: int
+    last_checked_at: datetime | None
+    last_success_at: datetime | None
+    consecutive_failures: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProductActivation(ApiModel):
+    active: bool
+
+
+class ProductVariant(ApiModel):
+    expected_variant: dict[str, str]
+
+    @field_validator("expected_variant")
+    @classmethod
+    def require_variant(cls, value: dict[str, str]) -> dict[str, str]:
+        if not value:
+            raise ValueError("expected_variant no puede estar vacío")
+        return _normalize_variant(value)
+
+
+class ObservationRead(ApiModel):
+    id: int
+    tracked_product_id: UUID | None
+    run_id: UUID
+    store_slug: str
+    source_url: str
+    external_product_id: str
+    sku: str
+    seller_id: str
+    seller_name: str
+    title: str
+    brand: str | None
+    model: str | None
+    variant: dict[str, str]
+    condition: str
+    currency: str
+    price: Decimal | None
+    list_price: Decimal | None
+    availability: str
+    available_quantity: int | None
+    is_marketplace: bool
+    installments: list[dict[str, object]]
+    quality_flags: list[str]
+    observed_at: datetime
+
+
+class OfferRead(ApiModel):
+    id: int
+    observation_id: int
+    tracked_product_id: UUID | None
+    product_label: str
+    title: str
+    store_slug: str
+    source_url: str
+    detector_version: str
+    policy_fingerprint: str
+    config_revision_id: int | None
+    classification: str
+    eligible: bool
+    score: int
+    confidence_score: int
+    confidence_level: str
+    currency: str
+    current_price: Decimal | None
+    reference_price: Decimal | None
+    discount_percent: Decimal | None
+    primary_signal_kind: str | None
+    signals: dict[str, object]
+    notification_status: str
+    confirmation_status: str
+    confirmation_count: int
+    reasons: list[str]
+    rejection_reasons: list[str]
+    quality_flags: list[str]
+    detected_at: datetime
+
+
+class ConfirmationRead(ApiModel):
+    offer_key: str
+    tracked_product_id: UUID | None
+    product_label: str | None
+    candidate_detection_id: int | None
+    candidate_classification: str
+    candidate_price: Decimal
+    confirmation_count: int
+    first_seen_at: datetime
+    last_seen_at: datetime
+    expires_at: datetime
+
+
+class CrawlRunRead(ApiModel):
+    id: UUID
+    store_slug: str
+    spider_name: str
+    status: str
+    requested_url_count: int
+    observation_count: int
+    error_count: int
+    error_summary: str | None
+    started_at: datetime
+    finished_at: datetime | None
+
+
+class CrawlJobCreate(ApiModel):
+    product_ids: list[UUID] = Field(min_length=1, max_length=20)
+
+    @field_validator("product_ids")
+    @classmethod
+    def unique_products(cls, value: list[UUID]) -> list[UUID]:
+        if len(set(value)) != len(value):
+            raise ValueError("product_ids no puede contener duplicados")
+        return value
+
+
+class CrawlJobItemRead(ApiModel):
+    id: int
+    tracked_product_id: UUID
+    crawl_run_id: UUID | None
+    store_slug: str
+    source_url: str
+    label: str
+    status: str
+    attempt_count: int
+    started_at: datetime | None
+    finished_at: datetime | None
+    last_error_code: str | None
+    last_error: str | None
+    result: dict[str, object]
+
+
+class CrawlJobRead(ApiModel):
+    id: UUID
+    status: str
+    request_source: str
+    requested_by: str
+    request_payload: dict[str, object]
+    priority: int
+    max_attempts: int
+    attempt_count: int
+    next_attempt_at: datetime
+    config_revision_id: int | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    cancel_requested_at: datetime | None
+    last_error_code: str | None
+    last_error: str | None
+    result: dict[str, object]
+    created_at: datetime
+    updated_at: datetime
+    items: list[CrawlJobItemRead]
+
+
+class RuntimePolicyRead(ApiModel):
+    revision_id: int | None
+    policy_fingerprint: str
+    changed_by: str | None = None
+    change_reason: str | None = None
+    detector_version: str
+    scheduler_poll_seconds: int
+    detection_history_limit: int
+    detection_history_days: int
+    minimum_history_samples: int
+    equivalent_max_age_hours: int
+    equivalent_limit: int
+    minimum_equivalent_samples: int
+    possible_error_minimum_corroborating_signals: int
+    possible_error_minimum_confidence: int
+    confirmation_required: bool
+    confirmation_max_age_minutes: int
+    confirmation_price_tolerance_percent: Decimal
+    confirmation_confidence_bonus: int
+    minimum_alert_confidence: int
+    good_deal_percent: Decimal
+    exceptional_deal_percent: Decimal
+    possible_price_error_percent: Decimal
+    alert_cooldown_hours: int
+    alert_significant_improvement_percent: Decimal
+    notification_lease_seconds: int
+    notification_max_attempts: int
+    notification_retry_base_seconds: int
+    telegram_enabled: bool
+    telegram_configured: bool
+    telegram_token_configured: bool
+    telegram_chat_id_configured: bool
+
+
+class RuntimePolicyPatch(ApiModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scheduler_poll_seconds: int | None = Field(default=None, ge=30, le=86_400)
+    detection_history_limit: int | None = Field(default=None, ge=3, le=10_000)
+    detection_history_days: int | None = Field(default=None, ge=30, le=3_650)
+    equivalent_max_age_hours: int | None = Field(default=None, ge=1, le=720)
+    equivalent_limit: int | None = Field(default=None, ge=2, le=100)
+    confirmation_required: bool | None = None
+    confirmation_max_age_minutes: int | None = Field(
+        default=None,
+        ge=30,
+        le=10_080,
+    )
+    confirmation_price_tolerance_percent: Decimal | None = Field(
+        default=None,
+        ge=0,
+        lt=100,
+    )
+    confirmation_confidence_bonus: int | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+    )
+    minimum_alert_confidence: int | None = Field(default=None, ge=0, le=100)
+    alert_cooldown_hours: int | None = Field(default=None, ge=1, le=720)
+    alert_significant_improvement_percent: Decimal | None = Field(
+        default=None,
+        ge=0,
+        lt=100,
+    )
+    notification_lease_seconds: int | None = Field(
+        default=None,
+        ge=30,
+        le=3_600,
+    )
+    notification_max_attempts: int | None = Field(default=None, ge=1, le=20)
+    notification_retry_base_seconds: int | None = Field(
+        default=None,
+        ge=30,
+        le=86_400,
+    )
+    telegram_enabled: bool | None = None
+    minimum_history_samples: int | None = Field(default=None, ge=1, le=100)
+    minimum_equivalent_samples: int | None = Field(default=None, ge=1, le=20)
+    possible_error_minimum_corroborating_signals: int | None = Field(
+        default=None,
+        ge=2,
+        le=8,
+    )
+    possible_error_minimum_confidence: int | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+    )
+    good_deal_percent: Decimal | None = Field(default=None, ge=0, lt=100)
+    exceptional_deal_percent: Decimal | None = Field(default=None, ge=0, lt=100)
+    possible_price_error_percent: Decimal | None = Field(
+        default=None,
+        ge=0,
+        lt=100,
+    )
+
+    @model_validator(mode="after")
+    def require_change(self) -> RuntimePolicyPatch:
+        if not self.model_fields_set:
+            raise ValueError("se requiere al menos un campo para actualizar")
+        if any(getattr(self, field_name) is None for field_name in self.model_fields_set):
+            raise ValueError("los campos de configuración no pueden ser null")
+        return self
+
+    def overrides(self) -> dict[str, object]:
+        return self.model_dump(exclude_unset=True, exclude_none=True)
+
+
+__all__ = [
+    "ConfirmationRead",
+    "CrawlJobCreate",
+    "CrawlJobItemRead",
+    "CrawlJobRead",
+    "CrawlRunRead",
+    "HealthRead",
+    "ObservationRead",
+    "OfferRead",
+    "Page",
+    "ProductCreate",
+    "ProductActivation",
+    "ProductPatch",
+    "ProductRead",
+    "ProductVariant",
+    "RuntimePolicyRead",
+    "RuntimePolicyPatch",
+    "StoreRead",
+]
