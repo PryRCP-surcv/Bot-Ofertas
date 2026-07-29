@@ -22,6 +22,7 @@ from bot_ofertas.api.schemas import (
     CrawlRunRead,
     ObservationRead,
     OfferRead,
+    OperationsStatusRead,
     Page,
     ProductActivation,
     ProductCreate,
@@ -34,6 +35,7 @@ from bot_ofertas.api.schemas import (
 )
 from bot_ofertas.detection import canonicalize_variant
 from bot_ofertas.domain import Availability
+from bot_ofertas.services.operations import read_operations_snapshot
 from bot_ofertas.services.runtime_policy import (
     EffectiveRuntimePolicy,
     replace_runtime_policy,
@@ -78,6 +80,12 @@ class InvalidCrawlJobRequestError(ValueError):
 
 class InvalidRuntimePolicyError(ValueError):
     pass
+
+
+def operations_status(session: Session) -> OperationsStatusRead:
+    """Return worker freshness and queue pressure without affecting readiness."""
+
+    return OperationsStatusRead.model_validate(read_operations_snapshot(session))
 
 
 def _page_size(limit: int) -> int:

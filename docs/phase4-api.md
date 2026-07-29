@@ -16,31 +16,18 @@ tienda.
 - Cola persistente e idempotente para rastreos solicitados manualmente.
 - Política de ejecución y detección versionada, auditable y sin secretos.
 - Comprobaciones de vida y disponibilidad.
+- Estado operativo real del worker, heartbeat, último ciclo y cola.
 - Documentación OpenAPI local.
 
 El panel visual de la Fase 4B está disponible en `dashboard/`. Swagger UI sigue
 siendo útil para revisar y probar el contrato HTTP directamente.
+La Fase 4C ejecuta el conjunto de forma privada con Docker y añade reinicio,
+watchdog, logs rotados y respaldos.
 
 ## Primera configuración
 
-Abre Ubuntu y sitúate en el proyecto:
-
-```bash
-cd /mnt/c/Users/TU_USUARIO_WINDOWS/Documents/Proyectos/bot-ofertas
-export PATH="$HOME/.local/bin:$PATH"
-export UV_PROJECT_ENVIRONMENT="$HOME/.venvs/bot-ofertas"
-```
-
-Actualiza el entorno y la base de datos:
-
-```bash
-docker compose up -d postgres
-uv sync --locked
-uv run bot-ofertas db upgrade
-```
-
-El `compose.yaml` actual levanta PostgreSQL; la API y el monitor siguen siendo
-procesos locales separados.
+Conserva el `.env` real en la raíz del proyecto. Antes del primer arranque,
+configura allí la credencial administrativa.
 
 Genera una credencial administrativa:
 
@@ -66,41 +53,30 @@ credencial y no mantiene una ventana con la clave anterior.
 
 ## Iniciar el sistema
 
-Se necesitan dos terminales de Ubuntu.
+Desde PowerShell, en la raíz del proyecto:
 
-Terminal 1, monitor y trabajador de la cola:
-
-```bash
-cd /mnt/c/Users/TU_USUARIO_WINDOWS/Documents/Proyectos/bot-ofertas
-export PATH="$HOME/.local/bin:$PATH"
-export UV_PROJECT_ENVIRONMENT="$HOME/.venvs/bot-ofertas"
-uv run bot-ofertas run
+```powershell
+.\scripts\bot-ofertas.ps1 start
 ```
 
-Terminal 2, API:
-
-```bash
-cd /mnt/c/Users/TU_USUARIO_WINDOWS/Documents/Proyectos/bot-ofertas
-export PATH="$HOME/.local/bin:$PATH"
-export UV_PROJECT_ENVIRONMENT="$HOME/.venvs/bot-ofertas"
-uv run bot-ofertas-api
-```
+Docker deja en segundo plano PostgreSQL, API, worker, watchdog, respaldos y
+panel. El contenedor de migraciones se ejecuta una vez y termina correctamente.
+No hace falta mantener una terminal abierta.
 
 Después abre:
 
 - Swagger UI: `http://127.0.0.1:8000/docs`
 - Estado del proceso: `http://127.0.0.1:8000/health/live`
 - Estado de dependencias: `http://127.0.0.1:8000/health/ready`
-- Panel local de Fase 4B: `http://localhost:3000` después de ejecutar
-  `npm run dev` dentro de `dashboard/`
+- Panel local: `http://localhost:3000`
 
 En Swagger pulsa **Authorize** e introduce el valor de
 `BOT_API_ADMIN_TOKEN`. Los dos endpoints de salud son públicos; todos los
 endpoints bajo `/api/v1` requieren la credencial.
 
-Si el monitor está apagado, se pueden registrar productos y encolar trabajos,
-pero estos permanecerán en estado `queued`. Al volver a iniciar
-`bot-ofertas run`, el monitor los recoge.
+Si el worker está apagado, se pueden registrar productos y encolar trabajos,
+pero estos permanecerán en estado `queued`. El panel lo muestra por separado de
+la salud de la API. Al recuperarse el worker, recoge la cola.
 
 ## Recursos principales
 
@@ -118,9 +94,25 @@ pero estos permanecerán en estado `queued`. Al volver a iniciar
 | `POST/GET /api/v1/crawl-jobs` | Solicita o consulta rastreos |
 | `POST /api/v1/crawl-jobs/{id}/cancel` | Cancela un trabajo abierto |
 | `GET/PATCH /api/v1/settings` | Consulta o cambia la política versionada |
+| `GET /api/v1/operations/status` | Heartbeat, último ciclo y estado de la cola |
 
 Las listas grandes usan `limit` y `cursor`; no se debe modificar ni construir
 manualmente el cursor devuelto como `next_cursor`.
+
+### Estado operativo
+
+`GET /api/v1/operations/status` requiere el mismo Bearer token que el resto de
+la administración. Informa por separado:
+
+- estado del worker: `running`, `stale`, `stopped` o `unknown`;
+- antigüedad y plazo del último heartbeat;
+- inicio, fin y resultado del último ciclo;
+- trabajos `queued`, `running` y `retrying`;
+- mensaje o último error operativo sanitizado.
+
+`/health/ready` solo confirma que la API, PostgreSQL, migraciones y adapters
+están disponibles. No demuestra por sí solo que el worker esté rastreando; para
+eso se usa `/api/v1/operations/status`.
 
 ### Productos
 
@@ -217,9 +209,17 @@ reiniciar `bot-ofertas run` para aplicarse.
 
 ## Seguridad y red
 
-La configuración predeterminada escucha únicamente en `127.0.0.1`. No cambies
-el host a `0.0.0.0` ni expongas el puerto a Internet sin añadir antes HTTPS,
-gestión de usuarios, rotación de credenciales y una capa de acceso adecuada.
+Docker Compose publica la API únicamente en `127.0.0.1` del equipo. Dentro del
+contenedor la aplicación escucha en todas sus interfaces para que Docker pueda
+alcanzarla, pero ese detalle no abre el puerto hacia la red. No cambies la
+dirección de publicación del host ni expongas el puerto a Internet sin añadir
+antes HTTPS, gestión de usuarios, rotación de credenciales y una capa de acceso
+adecuada.
+
+En la operación económica de Fase 4C, el panel y la API son exclusivos del
+administrador y solo están publicados en `localhost`. Los clientes reciben
+alertas por Telegram; no acceden a estos puertos. Pagos, membresías,
+autenticación multiusuario y despliegue público pertenecen a fases futuras.
 
 `BOT_API_CORS_ORIGINS` acepta una lista de orígenes exactos separados por comas.
 No usa comodines. Los valores predeterminados permiten el panel local de la Fase
@@ -240,23 +240,34 @@ logs sin revelar credenciales ni errores internos.
 
 Si `/health/ready` devuelve `503`, comprueba:
 
-```bash
-docker compose ps
-uv run alembic current
-uv run bot-ofertas store list
+```powershell
+.\scripts\bot-ofertas.ps1 status
+.\scripts\bot-ofertas.ps1 logs api
+.\scripts\bot-ofertas.ps1 logs migrations
 ```
 
 La API requiere que PostgreSQL esté disponible, que Alembic esté en
-`0009_phase4_admin` y que los adapters habilitados carguen sin errores.
+`0011_worker_watchdog_state` y que los adapters habilitados carguen sin errores.
 
 No ejecutes `alembic downgrade 0008_conditioned_offers` sin una copia de
-seguridad: el downgrade elimina la cola y las revisiones administrativas, y debe
-reducir decisiones repetidas bajo políticas distintas para volver al esquema
-anterior.
+seguridad: el downgrade elimina la cola, las revisiones administrativas y los
+estados operativos de worker y watchdog, y debe reducir decisiones repetidas
+bajo políticas distintas para volver al esquema anterior.
 
-Si un trabajo permanece en `queued`, confirma que `uv run bot-ofertas run` siga
-activo. La API y el monitor son procesos distintos que coordinan mediante
-PostgreSQL.
+Si un trabajo permanece en `queued`, revisa el estado operativo y los logs:
+
+```powershell
+.\scripts\bot-ofertas.ps1 logs worker
+.\scripts\bot-ofertas.ps1 logs watchdog
+```
+
+La API y el worker son procesos distintos que coordinan mediante PostgreSQL. El
+watchdog envía como máximo un aviso por incidente y otro por recuperación cuando
+Telegram está configurado. No puede avisar si toda la PC pierde energía o
+Internet.
+
+La guía completa de arranque, reinicio, logs y respaldos está en
+[Fase 4C: operación local económica](phase4c-operations.md).
 
 ## Pruebas
 
@@ -268,5 +279,6 @@ uv run alembic check
 ```
 
 Las pruebas cubren autenticación uniforme, CORS, errores, cursores, ETag,
-idempotencia, revisiones de configuración, leases, cancelación, modelos y el
-flujo transaccional de la API contra PostgreSQL.
+idempotencia, revisiones de configuración, leases, cancelación, heartbeat,
+watchdog, modelos y el flujo transaccional de la API contra una base PostgreSQL
+temporal aislada.

@@ -37,6 +37,7 @@ from bot_ofertas.api.schemas import (
     HealthRead,
     ObservationRead,
     OfferRead,
+    OperationsStatusRead,
     Page,
     ProductActivation,
     ProductCreate,
@@ -61,6 +62,7 @@ from bot_ofertas.api.service import (
     list_offers,
     list_products,
     list_stores,
+    operations_status,
     runtime_policy,
     set_product_activation,
     set_product_variant,
@@ -175,6 +177,16 @@ def health_ready(request: Request, registry: RegistryDependency) -> HealthRead:
             detail="Los adaptadores de tiendas no están listos.",
         )
     return HealthRead(status="ready", database="ready")
+
+
+@api_router.get(
+    "/operations/status",
+    response_model=OperationsStatusRead,
+    tags=["operations"],
+    summary="Estado persistente del monitor y su cola activa",
+)
+def operation_status(session: SessionDependency) -> OperationsStatusRead:
+    return operations_status(session)
 
 
 @api_router.get(

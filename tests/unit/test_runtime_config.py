@@ -29,6 +29,9 @@ _RUNTIME_ENV_NAMES = (
     "BOT_PRICE_ERROR_MIN_CONFIDENCE",
     "BOT_PRICE_ERROR_MIN_CORROBORATING_SIGNALS",
     "BOT_SCHEDULER_POLL_SECONDS",
+    "BOT_WATCHDOG_GRACE_SECONDS",
+    "BOT_WATCHDOG_POLL_SECONDS",
+    "TELEGRAM_ADMIN_CHAT_ID",
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_CHAT_ID",
     "TELEGRAM_ENABLED",
@@ -58,6 +61,9 @@ def test_runtime_settings_load_safe_defaults() -> None:
     assert settings.minimum_alert_confidence == 50
     assert settings.alert_significant_improvement_ratio == Decimal("0.05")
     assert settings.telegram_token is None
+    assert settings.telegram_admin_chat_id is None
+    assert settings.watchdog_poll_seconds == 60
+    assert settings.watchdog_grace_seconds == 180
     assert settings.detector_config.minimum_history_samples == 3
     assert settings.detector_config.minimum_equivalent_samples == 2
     assert settings.detector_config.possible_error_minimum_corroborating_signals == 2
@@ -87,6 +93,9 @@ def test_runtime_settings_load_phase3_policy_thresholds_and_telegram(
     monkeypatch.setenv("BOT_DEAL_PRICE_ERROR_PERCENT", "80")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "secret-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
+    monkeypatch.setenv("TELEGRAM_ADMIN_CHAT_ID", "67890")
+    monkeypatch.setenv("BOT_WATCHDOG_POLL_SECONDS", "90")
+    monkeypatch.setenv("BOT_WATCHDOG_GRACE_SECONDS", "240")
 
     settings = RuntimeSettings.from_env()
 
@@ -110,6 +119,9 @@ def test_runtime_settings_load_phase3_policy_thresholds_and_telegram(
     assert settings.detector_config.possible_error_minimum_confidence == 75
     assert settings.telegram_token == "secret-token"
     assert settings.telegram_chat_id == "12345"
+    assert settings.telegram_admin_chat_id == "67890"
+    assert settings.watchdog_poll_seconds == 90
+    assert settings.watchdog_grace_seconds == 240
     assert "secret-token" not in repr(settings)
 
 
@@ -147,6 +159,10 @@ def test_runtime_settings_reject_invalid_threshold_order(
         ("BOT_PRICE_ERROR_MIN_CONFIDENCE", "-1"),
         ("BOT_PRICE_ERROR_MIN_CONFIDENCE", "101"),
         ("BOT_EQUIVALENT_LIMIT", "not-an-integer"),
+        ("BOT_WATCHDOG_POLL_SECONDS", "29"),
+        ("BOT_WATCHDOG_POLL_SECONDS", "3601"),
+        ("BOT_WATCHDOG_GRACE_SECONDS", "-1"),
+        ("BOT_WATCHDOG_GRACE_SECONDS", "86401"),
     ],
 )
 def test_runtime_settings_reject_invalid_phase3_integer_policy(

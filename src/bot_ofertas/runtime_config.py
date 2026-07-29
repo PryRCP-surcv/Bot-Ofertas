@@ -171,7 +171,10 @@ class RuntimeSettings:
     notification_retry_base_seconds: int = 300
     telegram_token: str | None = field(default=None, repr=False)
     telegram_chat_id: str | None = None
+    telegram_admin_chat_id: str | None = field(default=None, repr=False)
     telegram_enabled: bool = True
+    watchdog_poll_seconds: int = 60
+    watchdog_grace_seconds: int = 180
     policy_revision_id: int | None = None
     detector_config: DetectorConfig = field(default_factory=DetectorConfig)
 
@@ -190,6 +193,9 @@ class RuntimeSettings:
 
         token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or None
         chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip() or None
+        admin_chat_id = (
+            os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "").strip() or chat_id
+        )
         return cls(
             detector_version=_required_text("BOT_DETECTOR_VERSION", "phase3-v2"),
             scheduler_poll_seconds=_integer(
@@ -278,7 +284,20 @@ class RuntimeSettings:
             ),
             telegram_token=token,
             telegram_chat_id=chat_id,
+            telegram_admin_chat_id=admin_chat_id,
             telegram_enabled=_boolean("TELEGRAM_ENABLED", True),
+            watchdog_poll_seconds=_integer(
+                "BOT_WATCHDOG_POLL_SECONDS",
+                60,
+                minimum=30,
+                maximum=3_600,
+            ),
+            watchdog_grace_seconds=_integer(
+                "BOT_WATCHDOG_GRACE_SECONDS",
+                180,
+                minimum=0,
+                maximum=86_400,
+            ),
             detector_config=DetectorConfig(
                 minimum_history_samples=_integer(
                     "BOT_DETECTION_MIN_HISTORY_SAMPLES",

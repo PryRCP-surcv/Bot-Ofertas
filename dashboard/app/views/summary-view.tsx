@@ -3,16 +3,25 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { ApiClient } from "@/lib/api";
-import { formatCurrency, formatPercent, formatRelativeTime } from "@/lib/format";
+import {
+  formatCurrency,
+  formatDateTime,
+  formatPercent,
+  formatRelativeTime,
+  titleCase,
+} from "@/lib/format";
 import {
   classificationLabels,
   classificationTones,
   operationalTone,
+  workerStateLabels,
+  workerStateTones,
 } from "@/lib/presentation";
 import type {
   ConfirmationRead,
   CrawlJobRead,
   OfferRead,
+  OperationsStatusRead,
   StoreRead,
 } from "@/lib/types";
 
@@ -37,10 +46,14 @@ interface SummaryData {
 export function SummaryView({
   client,
   onNavigate,
+  operationsError,
+  operationsStatus,
   refreshNonce,
 }: {
   client: ApiClient;
   onNavigate: (view: AdminView) => void;
+  operationsError: string;
+  operationsStatus: OperationsStatusRead | null;
   refreshNonce: number;
 }) {
   const [data, setData] = useState<SummaryData | null>(null);
@@ -103,6 +116,20 @@ export function SummaryView({
   const healthyStores = stores.filter(
     (store) => store.enabled && store.health.toLowerCase() === "healthy",
   ).length;
+  const workerState = operationsStatus?.worker.state ?? "unknown";
+  const workerTone = operationsError ? "danger" : workerStateTones[workerState];
+  const workerLabel = operationsError
+    ? "Estado no disponible"
+    : operationsStatus
+      ? workerStateLabels[workerState]
+      : "Consultando trabajador";
+  const lastHeartbeat = operationsStatus?.worker.last_heartbeat_at;
+  const lastCycleAt =
+    operationsStatus?.worker.last_cycle_finished_at ??
+    operationsStatus?.worker.last_cycle_started_at;
+  const workerNeedsAttention =
+    Boolean(operationsError) ||
+    ["stale", "stopped", "unknown"].includes(workerState);
 
   return (
     <div className="view-stack">
@@ -125,13 +152,69 @@ export function SummaryView({
         <div className="summary-hero__action">
           <span>Próxima acción</span>
           <strong>
-            Actualiza el catálogo y comprueba los precios que ya estén pendientes.
+            Revisa los productos elegibles y decide cuáles enviar a la cola.
           </strong>
           <Button onClick={() => onNavigate("crawls")}>
             <RadarIcon />
-            Rastrear productos
+            Ir a rastreo
           </Button>
         </div>
+      </section>
+
+      <section
+        aria-live="polite"
+        className={`worker-status-card worker-status-card--${workerTone}`}
+      >
+        <div className="worker-status-card__identity">
+          <span className="worker-status-card__signal" aria-hidden="true" />
+          <div>
+            <p className="section-kicker">Trabajador de rastreo</p>
+            <h2>{workerLabel}</h2>
+            <p>
+              {operationsStatus?.worker.instance_id
+                ? `Instancia ${operationsStatus.worker.instance_id}`
+                : "Aún no hay una instancia identificada"}
+            </p>
+          </div>
+        </div>
+        <dl className="worker-status-card__facts">
+          <div>
+            <dt>Última señal</dt>
+            <dd title={lastHeartbeat ? formatDateTime(lastHeartbeat) : undefined}>
+              {lastHeartbeat
+                ? formatRelativeTime(lastHeartbeat)
+                : "Sin señal registrada"}
+            </dd>
+          </div>
+          <div>
+            <dt>Último ciclo</dt>
+            <dd title={lastCycleAt ? formatDateTime(lastCycleAt) : undefined}>
+              {lastCycleAt ? formatRelativeTime(lastCycleAt) : "Sin ciclos"}
+              {operationsStatus?.worker.last_cycle_status
+                ? ` · ${titleCase(operationsStatus.worker.last_cycle_status)}`
+                : ""}
+            </dd>
+          </div>
+          <div>
+            <dt>Cola actual</dt>
+            <dd>
+              {operationsStatus
+                ? `${operationsStatus.queue.queued} en cola · ${operationsStatus.queue.running} en curso · ${operationsStatus.queue.retrying} reintentando`
+                : "Esperando información"}
+            </dd>
+          </div>
+        </dl>
+        {workerNeedsAttention ? (
+          <div className="worker-status-card__warning" role="alert">
+            <strong>El rastreo automático necesita atención.</strong>
+            <span>
+              {operationsError ||
+                operationsStatus?.worker.last_error ||
+                operationsStatus?.worker.message ||
+                "Los trabajos pueden permanecer en cola hasta que el trabajador vuelva a emitir señales."}
+            </span>
+          </div>
+        ) : null}
       </section>
 
       <section className="kpi-grid" aria-label="Indicadores principales">

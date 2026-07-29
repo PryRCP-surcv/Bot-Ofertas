@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import type { OperationsStatusRead } from "@/lib/types";
+
 import { AdminShell, type AdminView } from "./components/admin-shell";
 import {
   ConnectionGate,
@@ -50,6 +52,9 @@ function AdminWorkspace({
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [operationsStatus, setOperationsStatus] =
+    useState<OperationsStatusRead | null>(null);
+  const [operationsError, setOperationsError] = useState("");
 
   useEffect(() => {
     connection.client.setUnauthorizedHandler(onDisconnect);
@@ -63,6 +68,33 @@ function AdminWorkspace({
     const timer = window.setTimeout(() => setToast(null), 5_000);
     return () => window.clearTimeout(timer);
   }, [toast]);
+
+  const loadOperationsStatus = useCallback(async () => {
+    try {
+      const response = await connection.client.getOperationsStatus();
+      setOperationsStatus(response.data);
+      setOperationsError("");
+    } catch (statusError) {
+      setOperationsError(
+        statusError instanceof Error
+          ? statusError.message
+          : "No se pudo consultar el estado del trabajador.",
+      );
+    }
+  }, [connection.client]);
+
+  useEffect(() => {
+    const initialTimer = window.setTimeout(() => {
+      void loadOperationsStatus();
+    }, 0);
+    const pollingTimer = window.setInterval(() => {
+      void loadOperationsStatus();
+    }, 15_000);
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(pollingTimer);
+    };
+  }, [loadOperationsStatus, refreshNonce]);
 
   function notify(message: string, tone: "success" | "error") {
     setToast({ id: Date.now(), message, tone });
@@ -82,12 +114,16 @@ function AdminWorkspace({
         onDisconnect={onDisconnect}
         onRefresh={refresh}
         onViewChange={setView}
+        operationsError={operationsError}
+        operationsStatus={operationsStatus}
         view={view}
       >
         {view === "summary" ? (
           <SummaryView
             client={connection.client}
             onNavigate={setView}
+            operationsError={operationsError}
+            operationsStatus={operationsStatus}
             refreshNonce={refreshNonce}
           />
         ) : null}
@@ -108,6 +144,8 @@ function AdminWorkspace({
           <CrawlsView
             client={connection.client}
             onNotify={notify}
+            operationsError={operationsError}
+            operationsStatus={operationsStatus}
             refreshNonce={refreshNonce}
           />
         ) : null}

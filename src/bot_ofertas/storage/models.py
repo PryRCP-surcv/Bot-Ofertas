@@ -66,12 +66,196 @@ class CrawlJobItemStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class WorkerLifecycleStatus(StrEnum):
+    """Last lifecycle state explicitly reported by one local worker."""
+
+    RUNNING = "running"
+    STOPPED = "stopped"
+
+
+class WorkerCycleStatus(StrEnum):
+    """State of the most recent monitor cycle."""
+
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
 def _enum_values(enum_class: type[StrEnum]) -> list[str]:
     return [member.value for member in enum_class]
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class WorkerRuntimeState(Base):
+    """Durable heartbeat and cycle state for one named local worker."""
+
+    __tablename__ = "worker_runtime_states"
+    __table_args__ = (
+        CheckConstraint(
+            "lifecycle_status IN ('running', 'stopped')",
+            name="ck_worker_runtime_states_lifecycle_status",
+        ),
+        CheckConstraint(
+            "stale_after_seconds >= 30 AND stale_after_seconds <= 86400",
+            name="ck_worker_runtime_states_stale_after_range",
+        ),
+        CheckConstraint(
+            "last_cycle_status IS NULL "
+            "OR last_cycle_status IN ('running', 'succeeded', 'failed')",
+            name="ck_worker_runtime_states_cycle_status",
+        ),
+        CheckConstraint(
+            "(lifecycle_status = 'stopped') = (stopped_at IS NOT NULL)",
+            name="ck_worker_runtime_states_stopped_pair",
+        ),
+        CheckConstraint(
+            "last_heartbeat_at >= started_at",
+            name="ck_worker_runtime_states_heartbeat_order",
+        ),
+        CheckConstraint(
+            "stopped_at IS NULL OR stopped_at >= started_at",
+            name="ck_worker_runtime_states_stop_order",
+        ),
+        CheckConstraint(
+            "CASE "
+            "WHEN last_cycle_status IS NULL THEN "
+            "last_cycle_started_at IS NULL AND last_cycle_finished_at IS NULL "
+            "WHEN last_cycle_status = 'running' THEN "
+            "last_cycle_started_at IS NOT NULL AND last_cycle_finished_at IS NULL "
+            "ELSE "
+            "last_cycle_started_at IS NOT NULL AND last_cycle_finished_at IS NOT NULL "
+            "END",
+            name="ck_worker_runtime_states_cycle_shape",
+        ),
+        CheckConstraint(
+            "last_cycle_finished_at IS NULL "
+            "OR last_cycle_finished_at >= last_cycle_started_at",
+            name="ck_worker_runtime_states_cycle_order",
+        ),
+    )
+
+    worker_name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    instance_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        nullable=False,
+        default=uuid4,
+    )
+    lifecycle_status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=WorkerLifecycleStatus.RUNNING.value,
+        server_default=WorkerLifecycleStatus.RUNNING.value,
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    last_heartbeat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    stale_after_seconds: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=120,
+        server_default=text("120"),
+    )
+    last_cycle_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_cycle_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_cycle_status: Mapped[str | None] = mapped_column(String(16))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    message: Mapped[str | None] = mapped_column(String(500))
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.now(),
+    )
+
+
+class WorkerWatchdogState(Base):
+    """Persistent incident state used to deduplicate operational alerts."""
+
+    __tablename__ = "worker_watchdog_states"
+    __table_args__ = (
+        CheckConstraint(
+            "last_observed_state IN ('running', 'stale', 'stopped', 'unknown')",
+            name="ck_worker_watchdog_states_observed_state",
+        ),
+        CheckConstraint(
+            "(incident_id IS NULL) = (incident_opened_at IS NULL)",
+            name="ck_worker_watchdog_states_incident_pair",
+        ),
+        CheckConstraint(
+            "incident_alerted_at IS NULL OR incident_id IS NOT NULL",
+            name="ck_worker_watchdog_states_alert_incident",
+        ),
+        CheckConstraint(
+            "incident_alerted_at IS NULL "
+            "OR incident_alerted_at >= incident_opened_at",
+            name="ck_worker_watchdog_states_alert_order",
+        ),
+    )
+
+    worker_name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_observed_state: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="unknown",
+        server_default="unknown",
+    )
+    last_observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    incident_id: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True))
+    incident_opened_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    incident_alerted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_alert_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_recovery_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_notification_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.now(),
+    )
 
 
 class StoreCrawlState(Base):

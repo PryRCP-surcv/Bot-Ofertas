@@ -14,16 +14,25 @@ import {
   jobStatusLabels,
   jobTone,
   runStatusLabels,
+  workerStateLabels,
+  workerStateTones,
 } from "@/lib/presentation";
 import type {
   CrawlJobRead,
   CrawlRunRead,
+  OperationsStatusRead,
   ProductRead,
   StoreRead,
 } from "@/lib/types";
 
 import { RadarIcon, SearchIcon } from "../components/icons";
-import { Button, EmptyState, LoadingBlock, StatusPill } from "../components/ui";
+import {
+  Button,
+  EmptyState,
+  LoadingBlock,
+  Modal,
+  StatusPill,
+} from "../components/ui";
 
 interface CrawlData {
   jobs: CrawlJobRead[];
@@ -34,13 +43,44 @@ interface CrawlData {
   stores: StoreRead[];
 }
 
+function productIsDue(
+  product: ProductRead,
+  stores: StoreRead[],
+  now: number,
+): boolean {
+  const store = stores.find((item) => item.slug === product.store_slug);
+  if (!store?.enabled) {
+    return false;
+  }
+  if (
+    store.paused_until &&
+    new Date(store.paused_until).getTime() > now
+  ) {
+    return false;
+  }
+  if (!product.last_checked_at) {
+    return true;
+  }
+  const lastCheckedAt = new Date(product.last_checked_at).getTime();
+  if (!Number.isFinite(lastCheckedAt)) {
+    return true;
+  }
+  return (
+    lastCheckedAt + product.check_interval_minutes * 60_000 <= now
+  );
+}
+
 export function CrawlsView({
   client,
   onNotify,
+  operationsError,
+  operationsStatus,
   refreshNonce,
 }: {
   client: ApiClient;
   onNotify: (message: string, tone: "success" | "error") => void;
+  operationsError: string;
+  operationsStatus: OperationsStatusRead | null;
   refreshNonce: number;
 }) {
   const [data, setData] = useState<CrawlData | null>(null);
@@ -48,6 +88,7 @@ export function CrawlsView({
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const [error, setError] = useState("");
 
   const load = useCallback(
@@ -118,6 +159,30 @@ export function CrawlsView({
     );
   }, [data?.products, search]);
 
+  const eligibleProducts = useMemo(
+    () =>
+      visibleProducts.filter((product) =>
+        productIsDue(product, data?.stores ?? [], data?.loadedAt ?? 0),
+      ),
+    [data?.loadedAt, data?.stores, visibleProducts],
+  );
+
+  const allEligibleProducts = useMemo(
+    () =>
+      (data?.products ?? []).filter((product) =>
+        productIsDue(product, data?.stores ?? [], data?.loadedAt ?? 0),
+      ),
+    [data?.loadedAt, data?.products, data?.stores],
+  );
+
+  const selectedProducts = useMemo(
+    () =>
+      (data?.products ?? []).filter((product) =>
+        selected.includes(product.id),
+      ),
+    [data?.products, selected],
+  );
+
   const selectedByStore = useMemo(() => {
     const counts = new Map<string, number>();
     for (const product of data?.products ?? []) {
@@ -139,6 +204,7 @@ export function CrawlsView({
   );
 
   function toggleSelection(productId: string) {
+    setReviewOpen(false);
     setSelected((current) => {
       if (current.includes(productId)) {
         return current.filter((id) => id !== productId);
@@ -149,6 +215,45 @@ export function CrawlsView({
       }
       return [...current, productId];
     });
+  }
+
+  function quickSelect(products: ProductRead[], selectionLabel: string) {
+    const nextSelection: string[] = [];
+    const countsByStore = new Map<string, number>();
+
+    for (const product of products) {
+      if (nextSelection.length >= 20) {
+        break;
+      }
+      const store = data?.stores.find(
+        (item) => item.slug === product.store_slug,
+      );
+      if (!store?.enabled) {
+        continue;
+      }
+      const currentCount = countsByStore.get(product.store_slug) ?? 0;
+      if (currentCount >= store.max_targets_per_run) {
+        continue;
+      }
+      countsByStore.set(product.store_slug, currentCount + 1);
+      nextSelection.push(product.id);
+    }
+
+    setReviewOpen(false);
+    setSelected(nextSelection);
+    onNotify(
+      nextSelection.length
+        ? `${nextSelection.length} ${selectionLabel} seleccionados. Revisa el envío antes de confirmarlo.`
+        : `No hay productos ${selectionLabel} disponibles en esta vista.`,
+      nextSelection.length ? "success" : "error",
+    );
+  }
+
+  function requestJobReview() {
+    if (!selected.length || limitViolation) {
+      return;
+    }
+    setReviewOpen(true);
   }
 
   async function createJob() {
@@ -162,6 +267,7 @@ export function CrawlsView({
         { idempotencyKey: makeIdempotencyKey("panel-crawl") },
       );
       setSelected([]);
+      setReviewOpen(false);
       onNotify(
         `Trabajo ${shortId(response.data.id)} enviado a la cola.`,
         "success",
@@ -210,6 +316,20 @@ export function CrawlsView({
 
   const jobs = data?.jobs ?? [];
   const runs = data?.runs ?? [];
+  const workerState = operationsStatus?.worker.state ?? "unknown";
+  const workerTone = operationsError ? "danger" : workerStateTones[workerState];
+  const workerLabel = operationsError
+    ? "Estado no disponible"
+    : operationsStatus
+      ? workerStateLabels[workerState]
+      : "Consultando trabajador";
+  const lastHeartbeat = operationsStatus?.worker.last_heartbeat_at;
+  const lastCycle =
+    operationsStatus?.worker.last_cycle_finished_at ??
+    operationsStatus?.worker.last_cycle_started_at;
+  const workerUnavailable =
+    Boolean(operationsError) ||
+    ["stale", "stopped", "unknown"].includes(workerState);
 
   return (
     <div className="view-stack">
@@ -219,11 +339,40 @@ export function CrawlsView({
           <p className="section-kicker">Cola responsable</p>
           <h2>Solicita una revisión sin saltar límites</h2>
           <p>
-            “Rastrear ahora” coloca un trabajo en la cola. El monitor solo
-            consultará productos pendientes y respetará intervalos, cuotas,
-            pausas, robots.txt y CAPTCHA.
+            Seleccionar no inicia ninguna consulta. Después revisarás el
+            resumen y confirmarás el envío a la cola; el monitor volverá a
+            validar intervalos, cuotas, pausas, robots.txt y CAPTCHA.
           </p>
         </div>
+      </section>
+
+      <section
+        aria-live="polite"
+        className={`worker-inline-status worker-inline-status--${workerTone}`}
+        role={workerUnavailable ? "alert" : "status"}
+      >
+        <div>
+          <span className="worker-inline-status__dot" aria-hidden="true" />
+          <strong>{workerLabel}</strong>
+        </div>
+        <span>
+          Última señal:{" "}
+          {lastHeartbeat ? formatRelativeTime(lastHeartbeat) : "sin registro"}
+        </span>
+        <span>
+          Último ciclo: {lastCycle ? formatRelativeTime(lastCycle) : "sin registro"}
+          {operationsStatus?.worker.last_cycle_status
+            ? ` · ${titleCase(operationsStatus.worker.last_cycle_status)}`
+            : ""}
+        </span>
+        {workerUnavailable ? (
+          <small>
+            {operationsError ||
+              operationsStatus?.worker.last_error ||
+              operationsStatus?.worker.message ||
+              "Puedes preparar el trabajo, pero permanecerá en cola hasta que el trabajador vuelva a estar activo."}
+          </small>
+        ) : null}
       </section>
 
       <section className="crawl-layout">
@@ -243,6 +392,45 @@ export function CrawlsView({
               value={search}
             />
           </div>
+          <div className="crawl-picker__quick-actions">
+            <Button
+              disabled={!eligibleProducts.length}
+              onClick={() =>
+                quickSelect(eligibleProducts, "pendientes elegibles")
+              }
+              tone="secondary"
+              type="button"
+            >
+              Elegibles visibles ({eligibleProducts.length})
+            </Button>
+            <Button
+              disabled={!allEligibleProducts.length}
+              onClick={() =>
+                quickSelect(allEligibleProducts, "activos elegibles")
+              }
+              tone="ghost"
+              type="button"
+            >
+              Todos los elegibles activos ({allEligibleProducts.length})
+            </Button>
+            {selected.length ? (
+              <button
+                className="text-link"
+                onClick={() => {
+                  setReviewOpen(false);
+                  setSelected([]);
+                }}
+                type="button"
+              >
+                Limpiar
+              </button>
+            ) : null}
+          </div>
+          <p className="crawl-picker__eligibility-note">
+            “Elegibles” estima qué productos ya cumplieron su intervalo y no
+            tienen una pausa activa. El servidor siempre hace la validación
+            definitiva.
+          </p>
           <div className="crawl-product-list">
             {visibleProducts.length ? (
               visibleProducts.map((product) => (
@@ -289,10 +477,10 @@ export function CrawlsView({
             </div>
             <Button
               disabled={!selected.length || submitting || Boolean(limitViolation)}
-              onClick={() => void createJob()}
+              onClick={requestJobReview}
             >
               <RadarIcon />
-              {submitting ? "Enviando…" : "Enviar a la cola"}
+              Revisar envío
             </Button>
           </div>
         </article>
@@ -377,6 +565,81 @@ export function CrawlsView({
           )}
         </article>
       </section>
+
+      <Modal
+        description="Esta revisión no consulta tiendas todavía. El trabajo solo se crea cuando confirmas el siguiente paso."
+        onClose={() => {
+          if (!submitting) {
+            setReviewOpen(false);
+          }
+        }}
+        open={reviewOpen}
+        title="Confirma el trabajo de rastreo"
+      >
+        <div className="crawl-confirmation">
+          <div className="crawl-confirmation__summary">
+            <span>Productos seleccionados</span>
+            <strong>{selectedProducts.length}</strong>
+          </div>
+          <ul>
+            {selectedProducts.map((product) => (
+              <li key={product.id}>
+                <span>
+                  <strong>{product.label}</strong>
+                  <small>{titleCase(product.store_slug)}</small>
+                </span>
+                <StatusPill
+                  tone={
+                    productIsDue(
+                      product,
+                      data?.stores ?? [],
+                      data?.loadedAt ?? 0,
+                    )
+                      ? "success"
+                      : "warning"
+                  }
+                >
+                  {productIsDue(
+                    product,
+                    data?.stores ?? [],
+                    data?.loadedAt ?? 0,
+                  )
+                    ? "Elegible"
+                    : "Sujeto a intervalo"}
+                </StatusPill>
+              </li>
+            ))}
+          </ul>
+          {workerUnavailable ? (
+            <div className="job-warning">
+              El trabajador no está activo. Si confirmas, el trabajo quedará
+              guardado en la cola hasta que vuelva a funcionar.
+            </div>
+          ) : null}
+          <p>
+            Al confirmar, el servidor revalidará límites y pausas. Un producto
+            que todavía no corresponda será omitido responsablemente.
+          </p>
+          <div className="crawl-confirmation__actions">
+            <Button
+              disabled={submitting}
+              onClick={() => setReviewOpen(false)}
+              tone="secondary"
+              type="button"
+            >
+              Volver
+            </Button>
+            <Button
+              disabled={submitting || !selectedProducts.length}
+              onClick={() => void createJob()}
+              type="button"
+            >
+              <RadarIcon />
+              {submitting ? "Enviando…" : "Confirmar y enviar a la cola"}
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       <section className="surface">
         <header className="surface__header">

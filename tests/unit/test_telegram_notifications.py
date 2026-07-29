@@ -176,6 +176,38 @@ def test_send_uses_official_https_endpoint_and_expected_payload() -> None:
     ]
 
 
+def test_send_text_uses_plain_telegram_message_without_html_mode() -> None:
+    transport = RecordingTransport()
+    notifier = TelegramNotifier(
+        token="123:secret-token",
+        chat_id="-100123",
+        transport=transport,
+    )
+
+    result = notifier.send_text("⚠️ Monitor detenido")
+
+    assert result.status is NotificationStatus.SENT
+    assert transport.calls == [
+        (
+            "https://api.telegram.org/bot123:secret-token/sendMessage",
+            {
+                "chat_id": "-100123",
+                "text": "⚠️ Monitor detenido",
+                "disable_web_page_preview": True,
+            },
+            10.0,
+        )
+    ]
+
+
+@pytest.mark.parametrize("message", ["", "   ", "x" * 4_097])
+def test_send_text_rejects_empty_or_oversized_messages(message: str) -> None:
+    notifier = TelegramNotifier(token="token", chat_id="chat")
+
+    with pytest.raises(ValueError, match="message"):
+        notifier.send_text(message)
+
+
 @pytest.mark.parametrize(
     ("token", "chat_id", "enabled", "expected_detail"),
     [

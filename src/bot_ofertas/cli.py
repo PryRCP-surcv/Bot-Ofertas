@@ -32,6 +32,9 @@ from bot_ofertas.services import (
     DetectionBatchSummary,
     DetectionService,
     NotificationDispatcher,
+    WorkerHeartbeatLoop,
+    WorkerStatusService,
+    WorkerWatchdogService,
 )
 from bot_ofertas.services.runtime_policy import resolve_runtime_policy
 from bot_ofertas.storage.admin import CrawlJobRepository
@@ -72,6 +75,8 @@ _MAX_NOTIFICATION_LIMIT = 100
 _CRAWL_LEASE_DURATION = timedelta(hours=2)
 _CRAWL_JOB_LEASE_DURATION = timedelta(minutes=30)
 _CRAWL_JOB_HEARTBEAT_SECONDS = 60
+_WORKER_HEARTBEAT_SECONDS = 30
+_WORKER_STALE_AFTER_SECONDS = 120
 _CONDITION_FLAG_LABELS = {
     "conditional_card_price": "requiere tarjeta o medio de pago específico",
     "conditional_payment_method_price": "requiere tarjeta o medio de pago específico",
@@ -432,6 +437,28 @@ def _build_parser() -> argparse.ArgumentParser:
         type=_integer_between(30, 86_400),
         metavar="SEGUNDOS",
         help="Frecuencia del scheduler; por defecto usa BOT_SCHEDULER_POLL_SECONDS.",
+    )
+
+    watchdog_parser = commands.add_parser(
+        "watchdog",
+        help="Vigila el heartbeat del monitor y avisa caídas o recuperaciones.",
+    )
+    watchdog_parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Realiza una sola comprobación y termina.",
+    )
+    watchdog_parser.add_argument(
+        "--poll-seconds",
+        type=_integer_between(30, 3_600),
+        metavar="SEGUNDOS",
+        help="Frecuencia; por defecto usa BOT_WATCHDOG_POLL_SECONDS.",
+    )
+    watchdog_parser.add_argument(
+        "--grace-seconds",
+        type=_integer_between(0, 86_400),
+        metavar="SEGUNDOS",
+        help="Tolerancia antes de alertar; usa BOT_WATCHDOG_GRACE_SECONDS.",
     )
     return parser
 
@@ -1650,39 +1677,146 @@ def _isolated_cycle_stage(name: str, operation: Callable[[], int]) -> int:
 
 
 def _run_monitor(args: argparse.Namespace) -> int:
-    if args.once:
-        return _cycle(args)
+    with _worker_reporting() as worker:
+        if args.once:
+            return _reported_cycle(worker, lambda: _cycle(args))
 
-    settings = _runtime_settings()
-    poll_seconds = args.poll_seconds or settings.scheduler_poll_seconds
-    command_line = [
-        sys.executable,
-        "-m",
-        "bot_ofertas.cli",
-        "cycle",
-        "--crawl-limit",
-        str(args.crawl_limit),
-        "--analysis-limit",
-        str(args.analysis_limit),
-        "--notification-limit",
-        str(args.notification_limit),
-    ]
+        settings = _runtime_settings()
+        poll_seconds = args.poll_seconds or settings.scheduler_poll_seconds
+        command_line = [
+            sys.executable,
+            "-m",
+            "bot_ofertas.cli",
+            "cycle",
+            "--crawl-limit",
+            str(args.crawl_limit),
+            "--analysis-limit",
+            str(args.analysis_limit),
+            "--notification-limit",
+            str(args.notification_limit),
+        ]
 
-    def execute_cycle() -> None:
-        completed = subprocess.run(
-            command_line,
-            cwd=_PROJECT_ROOT,
-            check=False,
+        def execute_cycle() -> None:
+            status_code = _reported_cycle(
+                worker,
+                lambda: subprocess.run(
+                    command_line,
+                    cwd=_PROJECT_ROOT,
+                    check=False,
+                ).returncode,
+            )
+            if status_code != 0:
+                raise RuntimeError(f"el ciclo terminó con código {status_code}")
+
+        print(
+            f"Monitor iniciado; ejecutará un ciclo cada {poll_seconds} segundos. "
+            "Presiona Ctrl+C para detenerlo."
         )
-        if completed.returncode != 0:
-            raise RuntimeError(f"el ciclo terminó con código {completed.returncode}")
+        LocalScheduler(execute_cycle, poll_seconds).run()
+        print("Monitor detenido.")
+        return 0
+
+
+def _reported_cycle(
+    worker: WorkerStatusService,
+    operation: Callable[[], int],
+) -> int:
+    worker.cycle_started()
+    try:
+        status_code = int(operation())
+    except BaseException as error:
+        worker.cycle_finished(
+            succeeded=False,
+            error=f"{type(error).__name__}: {error}",
+        )
+        raise
+    worker.cycle_finished(
+        succeeded=status_code == 0,
+        error=None if status_code == 0 else f"El ciclo terminó con código {status_code}.",
+    )
+    return status_code
+
+
+@contextmanager
+def _worker_reporting() -> Iterator[WorkerStatusService]:
+    engine = create_database_engine(DatabaseSettings.from_env())
+    session_factory = create_session_factory(engine)
+    worker = WorkerStatusService(
+        session_factory,
+        stale_after_seconds=_WORKER_STALE_AFTER_SECONDS,
+    )
+    heartbeat = WorkerHeartbeatLoop(
+        worker,
+        interval_seconds=_WORKER_HEARTBEAT_SECONDS,
+    )
+    started = False
+    stop_error: str | None = None
+    try:
+        worker.register_start()
+        started = True
+        heartbeat.start()
+        try:
+            yield worker
+        except BaseException as error:
+            stop_error = f"{type(error).__name__}: {error}"
+            raise
+    finally:
+        heartbeat.stop()
+        if started:
+            try:
+                worker.register_stop(error=stop_error)
+            except (RuntimeError, SQLAlchemyError):
+                print(
+                    "Advertencia: no se pudo registrar la detención del monitor.",
+                    file=sys.stderr,
+                )
+        engine.dispose()
+
+
+def _run_watchdog(args: argparse.Namespace) -> int:
+    settings = _runtime_settings()
+    poll_seconds = args.poll_seconds or settings.watchdog_poll_seconds
+    grace_seconds = (
+        args.grace_seconds
+        if args.grace_seconds is not None
+        else settings.watchdog_grace_seconds
+    )
+    notifier = TelegramNotifier(
+        token=settings.telegram_token,
+        chat_id=settings.telegram_admin_chat_id,
+        enabled=settings.telegram_enabled,
+    )
+    engine = create_database_engine(DatabaseSettings.from_env())
+    session_factory = create_session_factory(engine)
+    service = WorkerWatchdogService(
+        session_factory,
+        notifier,
+        grace_seconds=grace_seconds,
+    )
+
+    def check_worker() -> None:
+        result = service.check_once()
+        if result.action is not None:
+            delivery = (
+                result.notification_status.value
+                if result.notification_status is not None
+                else "sin envío"
+            )
+            print(
+                "Watchdog: "
+                f"estado={result.worker_state}, acción={result.action}, "
+                f"telegram={delivery}."
+            )
 
     print(
-        f"Monitor iniciado; ejecutará un ciclo cada {poll_seconds} segundos. "
-        "Presiona Ctrl+C para detenerlo."
+        f"Watchdog iniciado; comprobará el monitor cada {poll_seconds} segundos "
+        f"con {grace_seconds} segundos de tolerancia."
     )
-    LocalScheduler(execute_cycle, poll_seconds).run()
-    print("Monitor detenido.")
+    try:
+        LocalScheduler(check_worker, poll_seconds).run(run_once=args.once)
+    finally:
+        engine.dispose()
+    print("Watchdog detenido.")
     return 0
 
 
@@ -1753,6 +1887,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _cycle(args)
     if args.command == "run":
         return _run_monitor(args)
+    if args.command == "watchdog":
+        return _run_watchdog(args)
     raise RuntimeError("comando no reconocido")
 
 

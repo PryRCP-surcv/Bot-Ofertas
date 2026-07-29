@@ -4,6 +4,12 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 
 import {
+  workerStateLabels,
+  workerStateTones,
+} from "@/lib/presentation";
+import type { OperationsStatusRead } from "@/lib/types";
+
+import {
   BoxIcon,
   HomeIcon,
   MenuIcon,
@@ -52,6 +58,8 @@ export function AdminShell({
   onDisconnect,
   onRefresh,
   onViewChange,
+  operationsError,
+  operationsStatus,
   view,
 }: {
   apiUrl: string;
@@ -60,10 +68,19 @@ export function AdminShell({
   onDisconnect: () => void;
   onRefresh: () => void;
   onViewChange: (view: AdminView) => void;
+  operationsError: string;
+  operationsStatus: OperationsStatusRead | null;
   view: AdminView;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const currentTitle = viewTitles[view];
+  const workerState = operationsStatus?.worker.state ?? "unknown";
+  const workerTone = operationsError ? "danger" : workerStateTones[workerState];
+  const workerLabel = operationsError
+    ? "Estado no disponible"
+    : operationsStatus
+      ? workerStateLabels[workerState]
+      : "Consultando trabajador";
 
   function selectView(nextView: AdminView) {
     onViewChange(nextView);
@@ -138,9 +155,12 @@ export function AdminShell({
             </div>
           </div>
           <div className="admin-topbar__actions">
-            <span className="monitor-chip">
+            <span
+              className={`monitor-chip monitor-chip--${workerTone}`}
+              title={operationsError || workerLabel}
+            >
               <span />
-              API lista
+              {workerLabel}
             </span>
             <Button
               aria-label="Actualizar datos"

@@ -10,6 +10,7 @@ import type {
   CrawlRunRead,
   HealthRead,
   ObservationRead,
+  OperationsStatusRead,
   OfferListParams,
   OfferRead,
   Page,
@@ -241,6 +242,14 @@ export class ApiClient {
 
   async healthReady(signal?: AbortSignal): Promise<ApiResponse<HealthRead>> {
     return this.request<HealthRead>("/health/ready", { signal });
+  }
+
+  async getOperationsStatus(
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<OperationsStatusRead>> {
+    return this.request<OperationsStatusRead>("/api/v1/operations/status", {
+      signal,
+    });
   }
 
   async listStores(signal?: AbortSignal): Promise<ApiResponse<StoreRead[]>> {

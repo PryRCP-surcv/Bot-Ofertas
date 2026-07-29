@@ -6,7 +6,8 @@ ofertas excepcionales y posibles errores de precio sin realizar compras.
 
 ## Estado actual
 
-Las Fases 1, 2, 3, 4A y 4B están implementadas para ejecución local:
+Las Fases 1, 2, 3, 4A, 4B y 4C están implementadas para ejecución local y
+privada:
 
 1. Se registra una URL pública de producto.
 2. El registro de tiendas reconoce el dominio, elige el adapter habilitado y
@@ -31,6 +32,10 @@ Las Fases 1, 2, 3, 4A y 4B están implementadas para ejecución local:
     resultados, versionar la política y encolar rastreos.
 14. Un panel web responsive consume esa API para operar productos, ofertas,
     tiendas, rastreos y configuración sin editar código.
+15. El trabajador publica un heartbeat persistente y el panel distingue el
+    estado de la API del estado real del rastreo.
+16. Docker mantiene PostgreSQL, API, worker, watchdog, respaldos y panel en
+    segundo plano, con reinicio automático y logs rotados.
 
 La primera prueba de la Fase 1 guardó correctamente una barra de sonido a
 `PEN 179.00`, con precio de lista `PEN 499.00`, disponibilidad y vendedor.
@@ -45,94 +50,74 @@ Comparten un parser VTEX reutilizable, pero conservan política, dominios,
 vendedores, fixtures y pruebas propios.
 
 El detector de Fase 3, la confirmación, la deduplicación, Telegram, el scheduler,
-la API de Fase 4A y el panel de Fase 4B ya están implementados. Las equivalencias entre tiendas son
-grupos creados y verificados manualmente: deben representar la misma marca,
-modelo y variante, y admiten como máximo una publicación por tienda. Aún no
-Aún no existen WhatsApp, Gmail, autenticación multiusuario ni despliegue
-permanente en un servidor.
+la API de Fase 4A, el panel de Fase 4B y la operación local robusta de Fase 4C ya
+están implementados. Las equivalencias entre tiendas son grupos creados y
+verificados manualmente: deben representar la misma marca, modelo y variante, y
+admiten como máximo una publicación por tienda. Aún no existen WhatsApp, Gmail,
+autenticación multiusuario, pagos, membresías ni despliegue permanente en un
+servidor.
 
 Telegram es actualmente un canal de salida: envía alertas, pero todavía no
-responde `/start`, `/ofertas`, `Hola` ni otros comandos. El monitoreo continuo
-solo funciona mientras `uv run bot-ofertas run` permanezca activo.
+responde `/start`, `/ofertas`, `Hola` ni otros comandos. El panel y la API son
+herramientas privadas del administrador; los futuros clientes recibirán las
+ofertas mediante Telegram, sin acceso al panel. El monitoreo continúa en segundo
+plano mientras la PC y Docker Desktop permanezcan encendidos.
 
 ## Dónde está cada cosa
 
 - Código y documentación: la carpeta donde se clonó este repositorio en Windows.
-- Esa misma carpeta desde Ubuntu/WSL:
-  `/mnt/c/Users/TU_USUARIO_WINDOWS/Documents/Proyectos/bot-ofertas`
-- Entorno Python, dentro de Ubuntu:
-  `$HOME/.venvs/bot-ofertas`
-- PostgreSQL, dentro de Docker Desktop:
-  contenedor `bot-ofertas-postgres`
+- Imágenes y procesos de Python, API y panel: servicios de Docker Compose.
+- PostgreSQL: servicio `postgres` de Docker Compose.
 - Datos de PostgreSQL:
   volumen persistente `bot-ofertas_postgres_data`
+- Respaldos: `backups/postgres` dentro del proyecto.
 
 Apagar la PC no elimina el proyecto ni el historial, pero sí detiene
-temporalmente los rastreos y las alertas. Después de reiniciar hay que volver a
-iniciar el monitor.
+temporalmente los rastreos y las alertas. Si Docker Desktop está configurado para
+iniciarse con Windows, los servicios con política de reinicio vuelven a
+levantarse. De todos modos, conviene comprobar su estado después de reiniciar.
 
 ## Volver a ejecutarlo después de reiniciar
 
 1. Abre Docker Desktop y espera a que indique **Engine running**.
-2. Abre Ubuntu desde Windows Terminal.
+2. Abre PowerShell en la raíz del proyecto.
 3. Ejecuta:
 
-```bash
-cd /mnt/c/Users/TU_USUARIO_WINDOWS/Documents/Proyectos/bot-ofertas
-export PATH="$HOME/.local/bin:$PATH"
-export UV_PROJECT_ENVIRONMENT="$HOME/.venvs/bot-ofertas"
-docker compose up -d postgres
-uv sync --locked
-uv run bot-ofertas db upgrade
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\bot-ofertas.ps1 start
 ```
 
-El head actual de migraciones es `0009_phase4_admin`.
+El script construye lo necesario, aplica las migraciones y deja activos
+`postgres`, `api`, `worker`, `watchdog`, `backup` y `dashboard`. El servicio
+`migrations` termina con código `0` después de actualizar el esquema; eso es
+normal. El head actual de migraciones es `0011_worker_watchdog_state`.
 
 Comprueba el estado:
 
-```bash
-docker compose ps
-uv run bot-ofertas config show
-uv run bot-ofertas store list
-uv run bot-ofertas product list
-uv run bot-ofertas history
-```
-
-Para mantener el monitor activo después de comprobar el estado:
-
-```bash
-uv run bot-ofertas run
-```
-
-La API administrativa se inicia en una segunda terminal:
-
-```bash
-uv run bot-ofertas-api
-```
-
-Antes de iniciarla, configura `BOT_API_ADMIN_TOKEN` según
-[Operación de la Fase 4A](docs/phase4-api.md). Swagger queda disponible
-localmente en `http://127.0.0.1:8000/docs`.
-
-El panel de Fase 4B se inicia desde Windows PowerShell en una tercera terminal:
-
 ```powershell
-cd C:\Users\TU_USUARIO_WINDOWS\Documents\Proyectos\bot-ofertas\dashboard
-$env:npm_config_script_shell='C:\Program Files\Git\bin\bash.exe'
-npm install
-npm run dev
+.\scripts\bot-ofertas.ps1 status
 ```
 
-Después abre `http://localhost:3000`, escribe
+No hace falta conservar PowerShell, Ubuntu ni tres terminales abiertas. Después
+abre `http://localhost:3000`, escribe
 `http://127.0.0.1:8000` como API y pega el valor real de
 `BOT_API_ADMIN_TOKEN`. El token solo permanece en memoria; al recargar la
 página se solicita nuevamente. La guía específica está en
 [`dashboard/README.md`](dashboard/README.md).
 
-En esta computadora PostgreSQL usa el puerto `5433` del host porque el `5432`
-ya estaba ocupado. El valor real se conserva en `.env`.
+Swagger queda en `http://127.0.0.1:8000/docs`. El estado operativo autenticado,
+incluido el heartbeat real del worker y el tamaño de la cola, se consulta en
+`GET /api/v1/operations/status`. La operación, reinicio, logs y respaldos están
+documentados en [Fase 4C: operación local económica](docs/phase4c-operations.md).
 
-## Uso
+Los puertos del host se toman de `.env`; por ejemplo, se puede usar `5433` para
+PostgreSQL si `5432` ya está ocupado.
+
+## Uso avanzado desde un entorno de desarrollo
+
+El panel cubre la operación cotidiana. Los siguientes comandos siguen
+disponibles para desarrollo o diagnóstico con el entorno Python instalado; no
+son necesarios para mantener los contenedores activos.
 
 Ver las tiendas registradas, sus dominios y si están habilitadas:
 
@@ -194,12 +179,14 @@ recuperación está en [Operación de la Fase 1](docs/phase1-operations.md).
 La selección de variantes, equivalencias, confianza y segunda comprobación está
 en [Operación de la Fase 3](docs/phase3-operations.md). La autenticación,
 endpoints, cola y configuración versionada están en
-[Operación de la Fase 4A](docs/phase4-api.md).
+[Operación de la Fase 4A](docs/phase4-api.md). El arranque unificado, watchdog,
+logs y respaldos están en
+[Fase 4C: operación local económica](docs/phase4c-operations.md).
 
-Detener PostgreSQL sin perder el historial:
+Detener todo sin perder el historial:
 
-```bash
-docker compose stop postgres
+```powershell
+.\scripts\bot-ofertas.ps1 stop
 ```
 
 ## Pruebas
@@ -217,8 +204,8 @@ Incluir la prueba transaccional contra PostgreSQL local:
 RUN_POSTGRES_TESTS=1 uv run pytest -q -p no:cacheprovider
 ```
 
-Las pruebas de PostgreSQL utilizan datos temporales y los revierten o eliminan
-al terminar.
+Las pruebas de PostgreSQL crean una base temporal aislada, aplican todas las
+migraciones y eliminan únicamente esa base al terminar.
 
 Revisión estática:
 
@@ -226,9 +213,10 @@ Revisión estática:
 uv run ruff check .
 ```
 
-El workflow de GitHub Actions ejecuta Ruff, las pruebas unitarias, todas las
-migraciones y las pruebas de integración con un PostgreSQL efímero en cada
-`push` a `main` y en cada pull request. Telegram permanece desactivado en CI.
+El workflow de GitHub Actions ejecuta Ruff, pruebas unitarias, migraciones,
+integración con PostgreSQL efímero y, para el panel, ESLint, TypeScript, build de
+producción, auditoría de dependencias de runtime y pruebas en cada `push` a
+`main` y pull request. Telegram permanece desactivado en CI.
 
 ## Arquitectura multi-tienda
 
@@ -249,6 +237,8 @@ URL registrada
   -> confirmación en otra ejecución
   -> deduplicación persistente
   -> delivery Telegram con lease y backoff
+  -> heartbeat persistente del worker
+  -> watchdog: alerta y recuperación deduplicadas
 ```
 
 `StoreRegistry` reúne adapters integrados en el proyecto y adapters publicados
@@ -294,6 +284,9 @@ Tablas:
   operativa, sin secretos.
 - `crawl_jobs` y `crawl_job_items`: solicitudes manuales idempotentes, leases y
   resultado por producto.
+- `worker_runtime_states`: heartbeat, ciclo y estado operativo del worker.
+- `worker_watchdog_states`: incidentes y avisos de caída o recuperación sin
+  duplicados.
 
 El precio total y las cuotas son campos distintos: una cuota individual nunca se
 usa como precio total. Las condiciones de tarjeta o medio de pago, membresía,
@@ -363,9 +356,14 @@ uv run bot-ofertas config show
 
 ## Siguientes hitos
 
-Las Fases 4A y 4B ya proporcionan el backend administrativo y el panel local.
-La Fase 4C cerrará la experiencia operativa, autenticación multiusuario,
-permisos, observabilidad y pruebas del conjunto antes de cualquier publicación
-permanente. Después vendrán el descubrimiento controlado de productos y el
-escalamiento con varios workers. WhatsApp y correo serán canales adicionales
-sobre el mismo contrato de notificaciones.
+La Fase 4C ya deja el sistema operable de forma privada y económica en una sola
+PC. No equivale todavía a un servicio público: el panel y la API solo escuchan
+en `localhost`, y la disponibilidad depende de que esa PC, Docker Desktop e
+Internet estén activos.
+
+Los siguientes hitos son el descubrimiento controlado de productos (Fase 5), el
+escalamiento y despliegue permanente, y luego la capa comercial. Pagos,
+membresías, gestión de clientes, autenticación multiusuario y permisos quedan
+fuera de Fase 4C. WhatsApp y correo podrán añadirse como canales sobre el mismo
+contrato de notificaciones; por ahora los destinatarios reciben alertas por
+Telegram.

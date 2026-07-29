@@ -33,6 +33,42 @@ export interface HealthRead {
   database: string | null;
 }
 
+export type WorkerState = "running" | "stale" | "stopped" | "unknown";
+
+/**
+ * Live operational contract exposed by GET /api/v1/operations/status.
+ *
+ * Timestamps and cycle details are nullable because a newly installed worker
+ * may not have emitted its first heartbeat or completed a cycle yet. Unknown
+ * fields returned by future API versions are intentionally harmless: this
+ * dashboard only reads the stable fields declared here.
+ */
+export interface WorkerOperationsRead {
+  state: WorkerState;
+  instance_id: string | null;
+  started_at: ISODateTime | null;
+  last_heartbeat_at: ISODateTime | null;
+  heartbeat_age_seconds: number | null;
+  stale_after_seconds: number | null;
+  last_cycle_started_at: ISODateTime | null;
+  last_cycle_finished_at: ISODateTime | null;
+  last_cycle_status: string | null;
+  last_error: string | null;
+  message?: string | null;
+}
+
+export interface QueueOperationsRead {
+  queued: number;
+  running: number;
+  retrying: number;
+}
+
+export interface OperationsStatusRead {
+  worker: WorkerOperationsRead;
+  queue: QueueOperationsRead;
+  checked_at: ISODateTime;
+}
+
 export interface StoreRead {
   slug: string;
   display_name: string;

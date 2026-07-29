@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import (
@@ -33,6 +34,32 @@ class HealthRead(ApiModel):
     status: str
     service: str = "bot-ofertas-api"
     database: str | None = None
+
+
+class WorkerOperationsRead(ApiModel):
+    state: Literal["running", "stale", "stopped", "unknown"]
+    instance_id: UUID | None
+    started_at: datetime | None
+    last_heartbeat_at: datetime | None
+    heartbeat_age_seconds: int | None = Field(default=None, ge=0)
+    stale_after_seconds: int | None = Field(default=None, ge=30, le=86_400)
+    last_cycle_started_at: datetime | None
+    last_cycle_finished_at: datetime | None
+    last_cycle_status: Literal["running", "succeeded", "failed"] | None
+    last_error: str | None
+    message: str
+
+
+class QueueOperationsRead(ApiModel):
+    queued: int = Field(ge=0)
+    running: int = Field(ge=0)
+    retrying: int = Field(ge=0)
+
+
+class OperationsStatusRead(ApiModel):
+    worker: WorkerOperationsRead
+    queue: QueueOperationsRead
+    checked_at: datetime
 
 
 def _normalize_variant(value: dict[str, str]) -> dict[str, str]:

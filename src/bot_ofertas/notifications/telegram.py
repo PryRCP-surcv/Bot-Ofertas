@@ -239,6 +239,29 @@ class TelegramNotifier:
     def send(self, notification: OfferNotification) -> NotificationResult:
         if not isinstance(notification, OfferNotification):
             raise TypeError("notification must be an OfferNotification")
+        return self._send_message(
+            render_telegram_message(notification),
+            parse_mode="HTML",
+        )
+
+    def send_text(self, message: str) -> NotificationResult:
+        """Send one bounded plain-text operational message."""
+
+        if not isinstance(message, str):
+            raise TypeError("message must be a string")
+        normalized = message.strip()
+        if not normalized:
+            raise ValueError("message must not be empty")
+        if len(normalized) > _MAX_MESSAGE_LENGTH:
+            raise ValueError("message exceeds the Telegram limit")
+        return self._send_message(normalized)
+
+    def _send_message(
+        self,
+        message: str,
+        *,
+        parse_mode: str | None = None,
+    ) -> NotificationResult:
         if not self.enabled:
             return NotificationResult(
                 channel=self.channel_name,
@@ -256,10 +279,11 @@ class TelegramNotifier:
         endpoint = f"{_TELEGRAM_API_ROOT}/bot{token}/sendMessage"
         payload: dict[str, object] = {
             "chat_id": chat_id,
-            "text": render_telegram_message(notification),
-            "parse_mode": "HTML",
+            "text": message,
             "disable_web_page_preview": True,
         }
+        if parse_mode is not None:
+            payload["parse_mode"] = parse_mode
         try:
             response = self._transport.post_json(
                 url=endpoint,

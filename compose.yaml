@@ -1,9 +1,23 @@
 name: bot-ofertas
 
+x-python-service: &python-service
+  image: bot-ofertas-app:local
+  env_file:
+    - .env
+  environment:
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+    TZ: America/Lima
+  init: true
+  logging: &local-logging
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
 services:
   postgres:
     image: postgres:18.4
-    container_name: bot-ofertas-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
@@ -20,7 +34,144 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+    logging: *local-logging
+
+  migrations:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    command: ["bot-ofertas", "db", "upgrade"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *python-service
+    restart: unless-stopped
+    command: ["bot-ofertas-api"]
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      BOT_API_HOST: "0.0.0.0"
+      BOT_API_PORT: "8000"
+      TZ: America/Lima
+    ports:
+      - "127.0.0.1:${BOT_API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=4).read()",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    <<: *python-service
+    restart: unless-stopped
+    command: ["bot-ofertas", "run"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+
+  watchdog:
+    <<: *python-service
+    restart: unless-stopped
+    command: ["bot-ofertas", "watchdog"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+
+  backup:
+    image: postgres:18.4
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER}
+      PGDATABASE: ${POSTGRES_DB}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      BOT_BACKUP_INTERVAL_SECONDS: ${BOT_BACKUP_INTERVAL_SECONDS:-86400}
+      BOT_BACKUP_RETENTION_DAYS: ${BOT_BACKUP_RETENTION_DAYS:-14}
+      TZ: America/Lima
+    volumes:
+      - ./backups/postgres:/backups
+    command:
+      - sh
+      - -ec
+      - |
+        while true; do
+          timestamp=$$(date -u +%Y%m%d-%H%M%S)
+          temporary="/backups/.bot-ofertas-$${timestamp}-$$.tmp"
+          destination="/backups/bot-ofertas-$${timestamp}.dump"
+          trap 'rm -f "$${temporary}"' EXIT INT TERM
+          pg_dump --format=custom --file "$${temporary}"
+          pg_restore --list "$${temporary}" >/dev/null
+          mv "$${temporary}" "$${destination}"
+          touch /backups/.last-success
+          find /backups -maxdepth 1 -type f -name 'bot-ofertas-*.dump' \
+            -mtime "+$${BOT_BACKUP_RETENTION_DAYS}" -delete
+          echo "Respaldo diario verificado: $${destination}"
+          trap - EXIT
+          sleep "$${BOT_BACKUP_INTERVAL_SECONDS}"
+        done
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "last=$$(stat -c %Y /backups/.last-success 2>/dev/null) || exit 1; now=$$(date +%s); test $$((now-last)) -le $$(($${BOT_BACKUP_INTERVAL_SECONDS:-86400}+3600))",
+        ]
+      interval: 1h
+      timeout: 5s
+      retries: 2
+      start_period: 2m
+    logging: *local-logging
+
+  dashboard:
+    image: bot-ofertas-dashboard:local
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:${BOT_DASHBOARD_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *local-logging
 
 volumes:
   postgres_data:
-

@@ -90,6 +90,24 @@ def test_confirmation_list_parser_accepts_bounded_limit() -> None:
     assert args.limit == 75
 
 
+def test_watchdog_parser_accepts_operational_timing() -> None:
+    args = _build_parser().parse_args(
+        [
+            "watchdog",
+            "--once",
+            "--poll-seconds",
+            "90",
+            "--grace-seconds",
+            "240",
+        ]
+    )
+
+    assert args.command == "watchdog"
+    assert args.once is True
+    assert args.poll_seconds == 90
+    assert args.grace_seconds == 240
+
+
 def test_quality_flags_separate_useful_conditions_from_blocking_warnings() -> None:
     conditions, blocking = _quality_flag_labels(
         [

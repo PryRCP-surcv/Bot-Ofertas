@@ -3,6 +3,7 @@ import type {
   CrawlRunStatus,
   DealClassification,
   NotificationStatus,
+  WorkerState,
 } from "./types";
 
 export type Tone = "success" | "warning" | "danger" | "info" | "neutral";
@@ -48,6 +49,20 @@ export const runStatusLabels: Record<CrawlRunStatus, string> = {
   partial: "Parcial",
   failed: "Fallida",
   cancelled: "Cancelada",
+};
+
+export const workerStateLabels: Record<WorkerState, string> = {
+  running: "Trabajador activo",
+  stale: "Sin señal reciente",
+  stopped: "Trabajador apagado",
+  unknown: "Estado desconocido",
+};
+
+export const workerStateTones: Record<WorkerState, Tone> = {
+  running: "success",
+  stale: "warning",
+  stopped: "danger",
+  unknown: "neutral",
 };
 
 export function operationalTone(status: string): Tone {

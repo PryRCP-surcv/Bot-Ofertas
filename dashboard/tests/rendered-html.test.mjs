@@ -66,6 +66,8 @@ test("mantiene la credencial solo en memoria y separa las pantallas", async () =
 
   assert.match(apiClient, /private token: string/);
   assert.match(apiClient, /Authorization/);
+  assert.match(apiClient, /getOperationsStatus/);
+  assert.match(apiClient, /\/api\/v1\/operations\/status/);
   const executableSource = `${apiClient}\n${connectionGate}\n${application}`
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/\/\/.*$/gm, "");
@@ -75,11 +77,23 @@ test("mantiene la credencial solo en memoria y separa las pantallas", async () =
   );
   assert.match(connectionGate, /type="password"/);
   assert.match(application, /setUnauthorizedHandler/);
+  assert.match(application, /loadOperationsStatus/);
+  assert.match(application, /15_000/);
 
   assert.match(summary, /listOffers/);
+  assert.match(summary, /Trabajador de rastreo/);
+  assert.match(summary, /Última señal/);
+  assert.match(summary, /Último ciclo/);
+  assert.match(summary, /Ir a rastreo/);
+  assert.doesNotMatch(summary, />\s*Rastrear productos\s*</);
   assert.match(offers, /state/);
   assert.match(products, /If-Match|etagForVersion/);
   assert.match(stores, /Añadir una tienda nueva requiere/);
   assert.match(crawls, /Idempotency|makeIdempotencyKey/);
+  assert.match(crawls, /Elegibles visibles/);
+  assert.match(crawls, /Todos los elegibles activos/);
+  assert.match(crawls, /Revisar envío/);
+  assert.match(crawls, /Confirmar y enviar a la cola/);
+  assert.match(crawls, /productIsDue/);
   assert.match(settings, /changeReason/);
 });
