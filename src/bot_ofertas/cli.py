@@ -24,6 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from bot_ofertas.crawling import settings as crawling_settings
+from bot_ofertas.crawling.spiders.sitemap_discovery import SitemapDiscoverySpider
 from bot_ofertas.detection import assess_quality_flags, canonicalize_variant
 from bot_ofertas.notifications import TelegramNotifier
 from bot_ofertas.runtime_config import RuntimeSettings
@@ -44,11 +45,15 @@ from bot_ofertas.storage.database import (
     create_session_factory,
     session_scope,
 )
+from bot_ofertas.storage.discovery import DiscoveryRepository
 from bot_ofertas.storage.models import (
     CrawlJobItem,
     CrawlJobItemStatus,
     CrawlJobStatus,
     DealDetection,
+    DiscoveryCandidate,
+    DiscoveryCandidateStatus,
+    DiscoverySource,
     OfferConfirmationState,
     PriceObservationRecord,
     StoreCrawlState,
@@ -72,6 +77,8 @@ _DEFAULT_ANALYSIS_LIMIT = 100
 _MAX_ANALYSIS_LIMIT = 1_000
 _DEFAULT_NOTIFICATION_LIMIT = 20
 _MAX_NOTIFICATION_LIMIT = 100
+_DEFAULT_DISCOVERY_LIMIT = 3
+_MAX_DISCOVERY_LIMIT = 3
 _CRAWL_LEASE_DURATION = timedelta(hours=2)
 _CRAWL_JOB_LEASE_DURATION = timedelta(minutes=30)
 _CRAWL_JOB_HEARTBEAT_SECONDS = 60
@@ -219,6 +226,93 @@ def _build_parser() -> argparse.ArgumentParser:
         "list",
         help="Lista tiendas, dominios y límites habilitados.",
     )
+
+    discovery_parser = commands.add_parser(
+        "discovery",
+        help="Descubre URLs de producto desde fuentes públicas revisadas.",
+    )
+    discovery_commands = discovery_parser.add_subparsers(
+        dest="discovery_command",
+        required=True,
+    )
+    discovery_commands.add_parser(
+        "sources",
+        help="Lista fuentes, límites y próxima ejecución.",
+    )
+    discovery_run = discovery_commands.add_parser(
+        "run",
+        help="Ejecuta fuentes pendientes con Scrapy y límites estrictos.",
+    )
+    discovery_run.add_argument(
+        "--force",
+        action="store_true",
+        help="Ignora la fecha programada; no omite leases, robots ni límites.",
+    )
+    discovery_run.add_argument(
+        "--store",
+        choices=(
+            "cassinelli",
+            "coolbox",
+            "curacao",
+            "efe",
+            "oechsle",
+            "promart",
+        ),
+        help="Limita la ejecución a una tienda registrada.",
+    )
+    discovery_run.add_argument(
+        "--source-id",
+        type=_uuid_argument,
+        metavar="UUID",
+        help="Ejecuta solo una fuente persistida.",
+    )
+    discovery_run.add_argument(
+        "--limit",
+        type=_integer_between(1, _MAX_DISCOVERY_LIMIT),
+        default=_DEFAULT_DISCOVERY_LIMIT,
+        metavar="N",
+    )
+    discovery_run.add_argument(
+        "--requested-by",
+        choices=("scheduler", "cli"),
+        default="cli",
+        help=argparse.SUPPRESS,
+    )
+    discovery_candidates = discovery_commands.add_parser(
+        "candidates",
+        help="Lista los candidatos encontrados más recientemente.",
+    )
+    discovery_candidates.add_argument(
+        "--status",
+        choices=tuple(status.value for status in DiscoveryCandidateStatus),
+        default=DiscoveryCandidateStatus.PENDING.value,
+    )
+    discovery_candidates.add_argument(
+        "--limit",
+        type=_integer_between(1, 100),
+        default=25,
+        metavar="N",
+    )
+    discovery_approve = discovery_commands.add_parser(
+        "approve",
+        help="Aprueba un candidato y lo agrega al monitoreo.",
+    )
+    discovery_approve.add_argument(
+        "candidate_id",
+        type=_uuid_argument,
+        metavar="UUID",
+    )
+    discovery_approve.add_argument("--label", help="Etiqueta editable del producto.")
+    discovery_reject = discovery_commands.add_parser(
+        "reject",
+        help="Rechaza un candidato dejando el motivo auditado.",
+    )
+    discovery_reject.add_argument(
+        "candidate_id",
+        type=_uuid_argument,
+        metavar="UUID",
+    )
+    discovery_reject.add_argument("--reason", required=True, help="Motivo del rechazo.")
 
     product_parser = commands.add_parser(
         "product",
@@ -628,6 +722,199 @@ def _list_stores() -> int:
         print("Adaptadores externos que no pudieron cargarse:")
         for error in registry.plugin_errors:
             print(f"- {error}")
+    return 0
+
+
+def _list_discovery_sources() -> int:
+    registry = get_store_registry()
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    try:
+        with session_scope(factory) as session:
+            repository = DiscoveryRepository(session)
+            repository.sync_registry(registry)
+            sources = repository.list_sources()
+    finally:
+        engine.dispose()
+    if not sources:
+        print("No hay fuentes de descubrimiento configuradas.")
+        return 0
+    print(f"Fuentes de descubrimiento: {len(sources)}")
+    for source in sources:
+        print()
+        print(f"- {source.store_slug} / {source.source_key}")
+        print(f"  URL: {source.source_url}")
+        print(
+            "  Estado: "
+            f"{source.last_status} | habilitada={'sí' if source.enabled else 'no'}"
+        )
+        print(
+            "  Límites: "
+            f"{source.max_documents_per_run} documentos, "
+            f"{source.max_candidates_per_run} candidatos, "
+            f"{source.daily_approval_limit} aprobaciones/día"
+        )
+        print(f"  Próxima ejecución: {_format_datetime(source.next_run_at)}")
+    return 0
+
+
+def _execute_discovery(args: argparse.Namespace) -> int:
+    registry = get_store_registry()
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    try:
+        with session_scope(factory) as session:
+            repository = DiscoveryRepository(session)
+            repository.sync_registry(registry)
+            claims = repository.claim_due(
+                requested_by=args.requested_by,
+                limit=args.limit,
+                force=args.force,
+                store_slug=args.store,
+                source_id=args.source_id,
+            )
+            sources = {
+                claim.source_id: session.get(DiscoverySource, claim.source_id)
+                for claim in claims
+            }
+    finally:
+        engine.dispose()
+
+    if not claims:
+        print("No hay fuentes de descubrimiento pendientes.")
+        return 0
+    print(f"Iniciando descubrimiento controlado de {len(claims)} fuente(s)...")
+    scrapy_settings = Settings()
+    scrapy_settings.setmodule(crawling_settings, priority="project")
+    process = CrawlerProcess(settings=scrapy_settings)
+    crawlers: list[tuple[object, Any]] = []
+    try:
+        for claim in claims:
+            source = sources.get(claim.source_id)
+            if source is None:  # pragma: no cover - transaction invariant
+                raise RuntimeError("la fuente reclamada ya no existe")
+            crawler = process.create_crawler(SitemapDiscoverySpider)
+            process.crawl(
+                crawler,
+                source_id=str(claim.source_id),
+                run_id=str(claim.run_id),
+                lease_token=str(claim.lease_token),
+                store_slug=source.store_slug,
+                source_url=source.source_url,
+                scan_cursor=source.scan_cursor,
+                max_documents_per_run=source.max_documents_per_run,
+                max_candidates_per_run=source.max_candidates_per_run,
+                child_path_pattern=source.child_path_pattern,
+                url_entry_filter=source.url_entry_filter,
+                requested_by=args.requested_by,
+            )
+            crawlers.append((claim, crawler))
+        process.start()
+    finally:
+        cleanup_engine = _database_engine()
+        cleanup_factory = create_session_factory(cleanup_engine)
+        try:
+            with session_scope(cleanup_factory) as session:
+                repository = DiscoveryRepository(session)
+                for claim in claims:
+                    repository.fail_claim_if_owned(
+                        claim,
+                        error_code="discovery_process_interrupted",
+                        error_summary="El proceso terminó antes de finalizar la fuente.",
+                    )
+        finally:
+            cleanup_engine.dispose()
+
+    successful = True
+    for claim, crawler in crawlers:
+        source = sources[claim.source_id]
+        status = str(
+            crawler.stats.get_value("bot_ofertas/discovery_status", "failed")
+        )
+        new_count = int(
+            crawler.stats.get_value("bot_ofertas/discovery_new_candidates", 0)
+            or 0
+        )
+        duplicate_count = int(
+            crawler.stats.get_value("bot_ofertas/discovery_duplicate_candidates", 0)
+            or 0
+        )
+        errors = int(
+            crawler.stats.get_value("bot_ofertas/discovery_error_count", 1)
+            or 0
+        )
+        successful = successful and status in {"succeeded", "partial"}
+        print(
+            f"{source.store_slug}: estado={status}, "
+            f"nuevos={new_count}, duplicados={duplicate_count}, errores={errors}."
+        )
+        print(f"  Ejecución: {claim.run_id}")
+    return 0 if successful else 1
+
+
+def _list_discovery_candidates(*, status: str, limit: int) -> int:
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    try:
+        with session_scope(factory) as session:
+            candidates = list(
+                session.scalars(
+                    select(DiscoveryCandidate)
+                    .where(DiscoveryCandidate.status == status)
+                    .order_by(
+                        DiscoveryCandidate.last_seen_at.desc(),
+                        DiscoveryCandidate.id.desc(),
+                    )
+                    .limit(limit)
+                )
+            )
+    finally:
+        engine.dispose()
+    if not candidates:
+        print(f"No hay candidatos con estado {status}.")
+        return 0
+    for candidate in candidates:
+        print()
+        print(f"- {candidate.label}")
+        print(f"  ID: {candidate.id}")
+        print(f"  Tienda: {candidate.store_slug} | Estado: {candidate.status}")
+        print(f"  URL: {candidate.canonical_url}")
+        if candidate.reason:
+            print(f"  Motivo: {candidate.reason}")
+    return 0
+
+
+def _review_discovery_candidate(
+    candidate_id: UUID,
+    *,
+    approve: bool,
+    label: str | None = None,
+    reason: str | None = None,
+) -> int:
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    try:
+        with session_scope(factory) as session:
+            repository = DiscoveryRepository(session)
+            if approve:
+                candidate = repository.approve_candidate(
+                    candidate_id,
+                    reviewed_by="cli",
+                    registry=get_store_registry(),
+                    label=label,
+                )
+            else:
+                candidate = repository.reject_candidate(
+                    candidate_id,
+                    reviewed_by="cli",
+                    reason=reason or "",
+                )
+    finally:
+        engine.dispose()
+    print(
+        f"Candidato {candidate.id}: estado={candidate.status}, "
+        f"producto={candidate.tracked_product_id or 'no creado'}."
+    )
     return 0
 
 
@@ -1630,6 +1917,26 @@ def _list_confirmations(limit: int) -> int:
 
 
 def _cycle(args: argparse.Namespace) -> int:
+    print("=== Descubrimiento ===")
+    discovery_status = _isolated_cycle_stage(
+        "descubrimiento",
+        lambda: subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "bot_ofertas.cli",
+                "discovery",
+                "run",
+                "--limit",
+                str(_DEFAULT_DISCOVERY_LIMIT),
+                "--requested-by",
+                "scheduler",
+            ],
+            cwd=_PROJECT_ROOT,
+            check=False,
+        ).returncode,
+    )
+    print()
     print("=== Rastreo ===")
     crawl_status = _isolated_cycle_stage(
         "rastreo",
@@ -1653,7 +1960,12 @@ def _cycle(args: argparse.Namespace) -> int:
         "alertas",
         lambda: _notify(args.notification_limit),
     )
-    return max(crawl_status, analysis_status, notification_status)
+    return max(
+        discovery_status,
+        crawl_status,
+        analysis_status,
+        notification_status,
+    )
 
 
 def _isolated_cycle_stage(name: str, operation: Callable[[], int]) -> int:
@@ -1845,6 +2157,24 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _show_config()
     if args.command == "store" and args.store_command == "list":
         return _list_stores()
+    if args.command == "discovery" and args.discovery_command == "sources":
+        return _list_discovery_sources()
+    if args.command == "discovery" and args.discovery_command == "run":
+        return _execute_discovery(args)
+    if args.command == "discovery" and args.discovery_command == "candidates":
+        return _list_discovery_candidates(status=args.status, limit=args.limit)
+    if args.command == "discovery" and args.discovery_command == "approve":
+        return _review_discovery_candidate(
+            args.candidate_id,
+            approve=True,
+            label=args.label,
+        )
+    if args.command == "discovery" and args.discovery_command == "reject":
+        return _review_discovery_candidate(
+            args.candidate_id,
+            approve=False,
+            reason=args.reason,
+        )
     if args.command == "product" and args.product_command == "add":
         return _add_product(args)
     if args.command == "product" and args.product_command == "list":

@@ -63,7 +63,7 @@ export function ConnectionGate({
           </div>
         </div>
         <div className="connection-story__copy">
-          <p className="section-kicker">Panel administrativo · Fase 4B</p>
+          <p className="section-kicker">Panel administrativo local</p>
           <h1 id="connection-title">
             Controla tu radar de ofertas desde un solo lugar.
           </h1>

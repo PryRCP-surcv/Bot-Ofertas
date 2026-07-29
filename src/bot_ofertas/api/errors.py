@@ -18,6 +18,7 @@ from bot_ofertas.api.cursors import CursorError
 from bot_ofertas.api.service import (
     CrawlJobNotFoundError,
     InvalidCrawlJobRequestError,
+    InvalidDiscoveryRequestError,
     InvalidRuntimePolicyError,
     ProductNotFoundError,
     UnsafeProductConfigurationError,
@@ -208,7 +209,11 @@ async def _invalid_administration_request_handler(
 ) -> JSONResponse:
     assert isinstance(
         error,
-        (InvalidCrawlJobRequestError, InvalidRuntimePolicyError),
+        (
+            InvalidCrawlJobRequestError,
+            InvalidDiscoveryRequestError,
+            InvalidRuntimePolicyError,
+        ),
     )
     return problem_response(
         request,
@@ -308,6 +313,10 @@ def install_exception_handlers(app: FastAPI) -> None:
     )
     app.add_exception_handler(
         InvalidRuntimePolicyError,
+        _invalid_administration_request_handler,
+    )
+    app.add_exception_handler(
+        InvalidDiscoveryRequestError,
         _invalid_administration_request_handler,
     )
     app.add_exception_handler(IntegrityError, _integrity_error_handler)

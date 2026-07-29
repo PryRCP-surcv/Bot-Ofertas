@@ -13,8 +13,10 @@ import {
   BoxIcon,
   HomeIcon,
   MenuIcon,
+  PaperPlaneIcon,
   RadarIcon,
   RefreshIcon,
+  SearchIcon,
   SettingsIcon,
   StoreIcon,
   TagIcon,
@@ -26,6 +28,8 @@ export type AdminView =
   | "offers"
   | "products"
   | "stores"
+  | "discovery"
+  | "distribution"
   | "crawls"
   | "settings";
 
@@ -38,6 +42,8 @@ const navigation: Array<{
   { id: "offers", label: "Ofertas", icon: TagIcon },
   { id: "products", label: "Productos", icon: BoxIcon },
   { id: "stores", label: "Tiendas", icon: StoreIcon },
+  { id: "discovery", label: "Descubrimiento", icon: SearchIcon },
+  { id: "distribution", label: "Distribución", icon: PaperPlaneIcon },
   { id: "crawls", label: "Rastreo", icon: RadarIcon },
   { id: "settings", label: "Configuración", icon: SettingsIcon },
 ];
@@ -47,6 +53,14 @@ const viewTitles: Record<AdminView, { eyebrow: string; title: string }> = {
   offers: { eyebrow: "Detección y evidencia", title: "Ofertas encontradas" },
   products: { eyebrow: "Catálogo vigilado", title: "Productos monitoreados" },
   stores: { eyebrow: "Adaptadores peruanos", title: "Salud de tiendas" },
+  discovery: {
+    eyebrow: "Catálogo público revisado",
+    title: "Descubrimiento controlado",
+  },
+  distribution: {
+    eyebrow: "Canal beta comercial",
+    title: "Distribución por Telegram",
+  },
   crawls: { eyebrow: "Operación responsable", title: "Rastreos y ejecuciones" },
   settings: { eyebrow: "Política versionada", title: "Configuración del monitor" },
 };

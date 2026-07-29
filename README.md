@@ -6,7 +6,7 @@ ofertas excepcionales y posibles errores de precio sin realizar compras.
 
 ## Estado actual
 
-Las Fases 1, 2, 3, 4A, 4B y 4C están implementadas para ejecución local y
+Las Fases 1, 2, 3, 4A, 4B, 4C, 5.1 y 5.2 están implementadas para ejecución local y
 privada:
 
 1. Se registra una URL pública de producto.
@@ -36,18 +36,23 @@ privada:
     estado de la API del estado real del rastreo.
 16. Docker mantiene PostgreSQL, API, worker, watchdog, respaldos y panel en
     segundo plano, con reinicio automático y logs rotados.
+17. Scrapy descubre progresivamente fichas desde los sitemaps oficiales de seis
+    tiendas, con rotación, leases, deduplicación y límites diarios.
+18. Los candidatos requieren aprobación administrativa antes de convertirse en
+    productos monitoreados.
+19. El panel muestra la salud de la audiencia beta de Telegram y permite enviar
+    una prueba fija, sin revelar el token ni el chat ID.
 
 La primera prueba de la Fase 1 guardó correctamente una barra de sonido a
 `PEN 179.00`, con precio de lista `PEN 499.00`, disponibilidad y vendedor.
 La validación viva de la Fase 2 guardó después una observación de Oechsle y otra
 de Promart, sin errores.
 
-Coolbox, Oechsle y Promart están habilitadas. Oechsle opera como piloto de
-alertas y Promart como piloto de historial: sus alertas quedan bloqueadas hasta
-modelar una ubicación verificable. Ambas se limitan a fichas agregadas
-manualmente, un mínimo de 60 minutos y un máximo de 5 URLs por tienda y corrida.
-Comparten un parser VTEX reutilizable, pero conservan política, dominios,
-vendedores, fixtures y pruebas propios.
+Coolbox, Oechsle, Promart, Cassinelli, EFE y La Curacao están habilitadas.
+Promart opera como piloto de historial: sus alertas quedan bloqueadas hasta
+modelar una ubicación verificable. Cassinelli reutiliza el núcleo VTEX; EFE y
+La Curacao usan Product/Offer JSON-LD contrastado con el precio HTML. Cada
+tienda conserva política, dominio, vendedor, límites y pruebas propios.
 
 El detector de Fase 3, la confirmación, la deduplicación, Telegram, el scheduler,
 la API de Fase 4A, el panel de Fase 4B y la operación local robusta de Fase 4C ya
@@ -59,7 +64,7 @@ servidor.
 
 Telegram es actualmente un canal de salida: envía alertas, pero todavía no
 responde `/start`, `/ofertas`, `Hola` ni otros comandos. El panel y la API son
-herramientas privadas del administrador; los futuros clientes recibirán las
+herramientas privadas del administrador; los suscriptores beta reciben las
 ofertas mediante Telegram, sin acceso al panel. El monitoreo continúa en segundo
 plano mientras la PC y Docker Desktop permanezcan encendidos.
 
@@ -90,7 +95,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bot-ofertas.ps1 start
 El script construye lo necesario, aplica las migraciones y deja activos
 `postgres`, `api`, `worker`, `watchdog`, `backup` y `dashboard`. El servicio
 `migrations` termina con código `0` después de actualizar el esquema; eso es
-normal. El head actual de migraciones es `0011_worker_watchdog_state`.
+normal. El head actual de migraciones es `0013_phase5_2_store_expansion`.
 
 Comprueba el estado:
 
@@ -123,6 +128,14 @@ Ver las tiendas registradas, sus dominios y si están habilitadas:
 
 ```bash
 uv run bot-ofertas store list
+```
+
+Consultar o ejecutar el descubrimiento acotado:
+
+```bash
+uv run bot-ofertas discovery sources
+uv run bot-ofertas discovery run
+uv run bot-ofertas discovery candidates --status pending
 ```
 
 Agregar una ficha pública de una tienda habilitada:
@@ -182,6 +195,10 @@ endpoints, cola y configuración versionada están en
 [Operación de la Fase 4A](docs/phase4-api.md). El arranque unificado, watchdog,
 logs y respaldos están en
 [Fase 4C: operación local económica](docs/phase4c-operations.md).
+El descubrimiento, sus límites y la revisión de candidatos están en
+[Fase 5.1: descubrimiento controlado](docs/phase5-discovery.md).
+La ampliación a seis tiendas y la audiencia beta están en
+[Fase 5.2: nuevas tiendas y beta por Telegram](docs/phase5-2-expansion-beta.md).
 
 Detener todo sin perder el historial:
 
@@ -239,6 +256,19 @@ URL registrada
   -> delivery Telegram con lease y backoff
   -> heartbeat persistente del worker
   -> watchdog: alerta y recuperación deduplicadas
+```
+
+El alta progresiva de Fases 5.1 y 5.2 usa un flujo separado antes de
+`tracked_products`:
+
+```text
+Sitemap oficial revisado
+  -> discovery_sources: intervalo, cursor y límites
+  -> Scrapy: robots.txt + índice + un product-N.xml
+  -> discovery_candidates: URL canónica deduplicada
+  -> aprobación administrativa
+  -> tracked_products
+  -> flujo normal de precio, detección y Telegram
 ```
 
 `StoreRegistry` reúne adapters integrados en el proyecto y adapters publicados
@@ -317,10 +347,11 @@ La operación y límites actuales están en
 - Circuito persistente por tienda y backoff por producto después de fallos.
 - `User-Agent` propio y configurable.
 
-Coolbox, Oechsle y Promart son los tres pilotos habilitados; Promart construye
-historial, pero no alerta mientras su ubicación sea desconocida. plazaVea queda
-diferida por precios por peso, ubicación y vendedores; Hiraoka, Ripley, Tai Loy
-y Memory Kings no se integran bajo las condiciones revisadas. Consulta
+Coolbox, Oechsle, Promart, Cassinelli, EFE y La Curacao son los seis adapters
+habilitados; Promart construye historial, pero no alerta mientras su ubicación
+sea desconocida. plazaVea y Tottus quedan diferidas por ubicación y otras
+dimensiones comerciales; Hiraoka, Ripley, Tai Loy y Memory Kings no se integran
+bajo las condiciones revisadas. Consulta
 [la política de fuentes](docs/source-policy.md).
 
 La detección automática no significa scraping universal. Solo reconoce dominios
@@ -361,9 +392,9 @@ PC. No equivale todavía a un servicio público: el panel y la API solo escuchan
 en `localhost`, y la disponibilidad depende de que esa PC, Docker Desktop e
 Internet estén activos.
 
-Los siguientes hitos son el descubrimiento controlado de productos (Fase 5), el
-escalamiento y despliegue permanente, y luego la capa comercial. Pagos,
-membresías, gestión de clientes, autenticación multiusuario y permisos quedan
-fuera de Fase 4C. WhatsApp y correo podrán añadirse como canales sobre el mismo
-contrato de notificaciones; por ahora los destinatarios reciben alertas por
-Telegram.
+La Fase 5.2 ya amplía el descubrimiento a seis tiendas y deja operativa una
+audiencia beta única de Telegram. Las personas se agregan y retiran manualmente
+del grupo después de comprobar su pago por fuera del sistema. Los siguientes
+hitos son el escalamiento, el despliegue permanente y, si la beta lo justifica,
+pagos, membresías y audiencias segmentadas. WhatsApp y correo podrán añadirse
+como canales sobre el mismo contrato de notificaciones.

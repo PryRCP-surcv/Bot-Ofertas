@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from bot_ofertas.crawling.promart import PROMART_HOSTS, normalize_promart_product_url
 from bot_ofertas.crawling.spiders.promart_product import PromartProductSpider
-from bot_ofertas.stores.base import StoreAdapter, StorePolicy
+from bot_ofertas.stores.base import DiscoverySourceSpec, StoreAdapter, StorePolicy
 
 
 class PromartAdapter(StoreAdapter):
@@ -22,6 +22,19 @@ class PromartAdapter(StoreAdapter):
         ),
     )
     spider_class = PromartProductSpider
+    discovery_sources = (
+        DiscoverySourceSpec(
+            key="products-sitemap",
+            url="https://www.promart.pe/sitemap.xml",
+            max_candidates_per_run=75,
+            daily_approval_limit=15,
+            active_product_limit=400,
+            notes=(
+                "Índice oficial anunciado en robots.txt; los productos aprobados "
+                "mantienen el bloqueo de alertas hasta verificar ubicación."
+            ),
+        ),
+    )
 
     def normalize_product_url(self, url: str) -> str:
         return normalize_promart_product_url(url)

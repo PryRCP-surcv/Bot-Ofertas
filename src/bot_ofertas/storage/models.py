@@ -66,6 +66,24 @@ class CrawlJobItemStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class DiscoveryRunStatus(StrEnum):
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+    CANCELLED = "cancelled"
+
+
+class DiscoveryCandidateStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    DUPLICATE = "duplicate"
+    POLICY_BLOCKED = "policy_blocked"
+    UNAVAILABLE = "unavailable"
+
+
 class WorkerLifecycleStatus(StrEnum):
     """Last lifecycle state explicitly reported by one local worker."""
 
@@ -302,6 +320,273 @@ class StoreCrawlState(Base):
     )
 
 
+class DiscoverySource(Base):
+    """Persisted, reviewed and strictly bounded catalogue source."""
+
+    __tablename__ = "discovery_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "store_slug",
+            "source_key",
+            name="uq_discovery_sources_store_key",
+        ),
+        UniqueConstraint(
+            "store_slug",
+            "source_url",
+            name="uq_discovery_sources_store_url",
+        ),
+        CheckConstraint(
+            "source_type = 'sitemap'",
+            name="ck_discovery_sources_type",
+        ),
+        CheckConstraint(
+            "url_entry_filter IN ('all', 'has_image')",
+            name="ck_discovery_sources_url_entry_filter",
+        ),
+        CheckConstraint(
+            "minimum_interval_minutes >= 60",
+            name="ck_discovery_sources_interval",
+        ),
+        CheckConstraint(
+            "max_documents_per_run BETWEEN 1 AND 10",
+            name="ck_discovery_sources_document_limit",
+        ),
+        CheckConstraint(
+            "max_candidates_per_run BETWEEN 1 AND 500",
+            name="ck_discovery_sources_candidate_limit",
+        ),
+        CheckConstraint(
+            "daily_approval_limit BETWEEN 1 AND 1000",
+            name="ck_discovery_sources_approval_limit",
+        ),
+        CheckConstraint(
+            "active_product_limit BETWEEN 1 AND 10000",
+            name="ck_discovery_sources_product_limit",
+        ),
+        CheckConstraint(
+            "scan_cursor >= 0",
+            name="ck_discovery_sources_scan_cursor",
+        ),
+        CheckConstraint(
+            "(lease_token IS NULL) = (lease_expires_at IS NULL)",
+            name="ck_discovery_sources_lease_pair",
+        ),
+        CheckConstraint(
+            "last_status IN "
+            "('never', 'running', 'succeeded', 'partial', 'failed', 'blocked', 'cancelled')",
+            name="ck_discovery_sources_last_status",
+        ),
+        CheckConstraint(
+            "version >= 1",
+            name="ck_discovery_sources_version",
+        ),
+        Index(
+            "ix_discovery_sources_scheduler",
+            "enabled",
+            "next_run_at",
+            "lease_expires_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+    store_slug: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_type: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="sitemap",
+        server_default=text("'sitemap'"),
+    )
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+    minimum_interval_minutes: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1_440,
+        server_default=text("1440"),
+    )
+    max_documents_per_run: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=2,
+        server_default=text("2"),
+    )
+    max_candidates_per_run: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=100,
+        server_default=text("100"),
+    )
+    daily_approval_limit: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=20,
+        server_default=text("20"),
+    )
+    active_product_limit: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=500,
+        server_default=text("500"),
+    )
+    child_path_pattern: Mapped[str] = mapped_column(String(500), nullable=False)
+    url_entry_filter: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="all",
+        server_default=text("'all'"),
+    )
+    notes: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default="",
+        server_default=text("''"),
+    )
+    scan_cursor: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    next_run_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="never",
+        server_default=text("'never'"),
+    )
+    last_error_code: Mapped[str | None] = mapped_column(String(100))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    lease_token: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default=text("1"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.now(),
+    )
+
+
+class DiscoveryRun(Base):
+    """Auditable execution of one discovery source."""
+
+    __tablename__ = "discovery_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running', 'succeeded', 'partial', 'failed', 'blocked', 'cancelled')",
+            name="ck_discovery_runs_status",
+        ),
+        CheckConstraint(
+            "requested_by IN ('scheduler', 'api', 'cli')",
+            name="ck_discovery_runs_requested_by",
+        ),
+        CheckConstraint(
+            "document_count >= 0 AND candidate_count >= 0 AND new_count >= 0 "
+            "AND duplicate_count >= 0 AND rejected_count >= 0 AND error_count >= 0",
+            name="ck_discovery_runs_counts",
+        ),
+        CheckConstraint(
+            "(status = 'running') = (finished_at IS NULL)",
+            name="ck_discovery_runs_finished_state",
+        ),
+        Index(
+            "ix_discovery_runs_recent",
+            "started_at",
+            "id",
+        ),
+        Index(
+            "ix_discovery_runs_source_recent",
+            "source_id",
+            "started_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+    source_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey(
+            "discovery_sources.id",
+            name="fk_discovery_runs_source_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    store_slug: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default=DiscoveryRunStatus.RUNNING.value,
+        server_default=text("'running'"),
+    )
+    requested_by: Mapped[str] = mapped_column(String(32), nullable=False)
+    document_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    candidate_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    new_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    duplicate_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    rejected_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    error_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    error_summary: Mapped[str | None] = mapped_column(Text)
+    stats: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class TrackedProduct(Base):
     """A store listing explicitly scheduled for responsible monitoring."""
 
@@ -415,6 +700,136 @@ class TrackedProduct(Base):
     crawl_job_items: Mapped[list[CrawlJobItem]] = relationship(
         back_populates="tracked_product",
         passive_deletes=True,
+    )
+
+
+class DiscoveryCandidate(Base):
+    """Canonical product URL awaiting an explicit administration decision."""
+
+    __tablename__ = "discovery_candidates"
+    __table_args__ = (
+        UniqueConstraint(
+            "store_slug",
+            "url_fingerprint",
+            name="uq_discovery_candidates_store_fingerprint",
+        ),
+        CheckConstraint(
+            "status IN "
+            "('pending', 'approved', 'rejected', 'duplicate', 'policy_blocked', 'unavailable')",
+            name="ck_discovery_candidates_status",
+        ),
+        CheckConstraint(
+            "length(url_fingerprint) = 64",
+            name="ck_discovery_candidates_fingerprint",
+        ),
+        CheckConstraint(
+            "status <> 'approved' OR tracked_product_id IS NOT NULL",
+            name="ck_discovery_candidates_approved_product",
+        ),
+        CheckConstraint(
+            "(reviewed_at IS NULL) = (reviewed_by IS NULL)",
+            name="ck_discovery_candidates_review_pair",
+        ),
+        CheckConstraint(
+            "version >= 1",
+            name="ck_discovery_candidates_version",
+        ),
+        Index(
+            "ix_discovery_candidates_status_recent",
+            "status",
+            "last_seen_at",
+            "id",
+        ),
+        Index(
+            "ix_discovery_candidates_store_status",
+            "store_slug",
+            "status",
+            "last_seen_at",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+    source_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey(
+            "discovery_sources.id",
+            name="fk_discovery_candidates_source_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    latest_run_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey(
+            "discovery_runs.id",
+            name="fk_discovery_candidates_latest_run_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    tracked_product_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey(
+            "tracked_products.id",
+            name="fk_discovery_candidates_tracked_product_id",
+            ondelete="SET NULL",
+        ),
+    )
+    store_slug: Mapped[str] = mapped_column(String(64), nullable=False)
+    discovered_url: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_url: Mapped[str] = mapped_column(Text, nullable=False)
+    url_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    label: Mapped[str] = mapped_column(String(500), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default=DiscoveryCandidateStatus.PENDING.value,
+        server_default=text("'pending'"),
+    )
+    reason: Mapped[str | None] = mapped_column(String(500))
+    discovery_metadata: Mapped[dict[str, Any]] = mapped_column(
+        "metadata",
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    reviewed_by: Mapped[str | None] = mapped_column(String(200))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default=text("1"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.now(),
     )
 
 

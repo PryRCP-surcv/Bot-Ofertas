@@ -79,7 +79,9 @@ def test_builtin_registry_detects_and_normalizes_coolbox_urls() -> None:
 
     assert adapter.slug == "coolbox"
     assert canonical_url == "https://www.coolbox.pe/barra-sonido/p"
-    assert registry.enabled_store_slugs == frozenset({"coolbox", "oechsle", "promart"})
+    assert registry.enabled_store_slugs == frozenset(
+        {"cassinelli", "coolbox", "curacao", "efe", "oechsle", "promart"}
+    )
 
     oechsle, oechsle_url = registry.resolve(
         "https://oechsle.pe/producto-demo/p?utm_source=test"
@@ -95,6 +97,24 @@ def test_builtin_registry_detects_and_normalizes_coolbox_urls() -> None:
     assert promart.policy.enabled is True
     assert promart.policy.minimum_interval_minutes == 60
     assert promart.policy.max_targets_per_run == 5
+
+    efe, efe_url = registry.resolve(
+        "https://efe.com.pe/cafetera-demo.html?utm_source=test"
+    )
+    assert efe_url == "https://www.efe.com.pe/cafetera-demo.html"
+    assert efe.policy.max_targets_per_run == 5
+
+    curacao, curacao_url = registry.resolve(
+        "https://lacuracao.pe/cafetera-demo.html#detalle"
+    )
+    assert curacao_url == "https://www.lacuracao.pe/cafetera-demo.html"
+    assert curacao.policy.max_targets_per_run == 5
+
+    cassinelli, cassinelli_url = registry.resolve(
+        "https://cassinelli.com/porcelanato-demo/p?utm_source=test"
+    )
+    assert cassinelli_url == "https://www.cassinelli.com/porcelanato-demo/p"
+    assert cassinelli.policy.max_targets_per_run == 10
 
 
 def test_registry_resolves_registered_hosts_without_guessing() -> None:

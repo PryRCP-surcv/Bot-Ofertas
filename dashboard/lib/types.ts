@@ -338,6 +338,126 @@ export interface CrawlJobRead {
   items: CrawlJobItemRead[];
 }
 
+export type DiscoveryCandidateStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "duplicate"
+  | "policy_blocked"
+  | "unavailable";
+
+export type DiscoveryRunStatus =
+  | "running"
+  | "succeeded"
+  | "partial"
+  | "failed"
+  | "blocked"
+  | "cancelled";
+
+export interface DiscoverySourceRead {
+  id: UUID;
+  store_slug: string;
+  source_key: string;
+  source_type: string;
+  source_url: string;
+  enabled: boolean;
+  minimum_interval_minutes: number;
+  max_documents_per_run: number;
+  max_candidates_per_run: number;
+  daily_approval_limit: number;
+  active_product_limit: number;
+  url_entry_filter: "all" | "has_image";
+  notes: string;
+  scan_cursor: number;
+  next_run_at: ISODateTime;
+  last_started_at: ISODateTime | null;
+  last_finished_at: ISODateTime | null;
+  last_status: string;
+  last_error_code: string | null;
+  last_error: string | null;
+  version: number;
+  candidate_counts: Record<string, number>;
+}
+
+export interface DiscoveryRunRead {
+  id: UUID;
+  source_id: UUID;
+  store_slug: string;
+  status: DiscoveryRunStatus;
+  requested_by: string;
+  document_count: number;
+  candidate_count: number;
+  new_count: number;
+  duplicate_count: number;
+  rejected_count: number;
+  error_count: number;
+  error_code: string | null;
+  error_summary: string | null;
+  stats: JsonObject;
+  started_at: ISODateTime;
+  finished_at: ISODateTime | null;
+}
+
+export interface DiscoveryCandidateRead {
+  id: UUID;
+  source_id: UUID;
+  latest_run_id: UUID;
+  tracked_product_id: UUID | null;
+  store_slug: string;
+  discovered_url: string;
+  canonical_url: string;
+  label: string;
+  status: DiscoveryCandidateStatus;
+  reason: string | null;
+  discovery_metadata: JsonObject;
+  first_seen_at: ISODateTime;
+  last_seen_at: ISODateTime;
+  reviewed_by: string | null;
+  reviewed_at: ISODateTime | null;
+  version: number;
+}
+
+export interface TelegramDistributionStatusRead {
+  enabled: boolean;
+  configured: boolean;
+  ready: boolean;
+  audience_mode: "single_chat";
+  membership_mode: "manual";
+  payment_mode: "manual_external";
+  automatic_offer_delivery: boolean;
+  queue_counts: Record<
+    "pending" | "retrying" | "sent" | "failed" | "superseded",
+    number
+  >;
+  last_sent_at: ISODateTime | null;
+  last_error_at: ISODateTime | null;
+  last_error_code: string | null;
+  last_error: string | null;
+}
+
+export interface TelegramTestRead {
+  status: "sent" | "failed" | "disabled";
+  sent: boolean;
+  message_id: string | null;
+  detail: string | null;
+}
+
+export interface DiscoveryCandidateListParams extends PageParams {
+  status?: DiscoveryCandidateStatus;
+  store_slug?: string;
+  search?: string;
+}
+
+export interface DiscoveryReview {
+  action: "approve" | "reject";
+  label?: string;
+  reason?: string;
+}
+
+export interface DiscoveryBulkReview extends DiscoveryReview {
+  candidate_ids: UUID[];
+}
+
 export interface CrawlJobListParams extends PageParams {
   status?: CrawlJobStatus;
 }

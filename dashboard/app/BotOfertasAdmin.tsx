@@ -11,6 +11,8 @@ import {
 } from "./components/connection-gate";
 import { Toast } from "./components/ui";
 import { CrawlsView } from "./views/crawls-view";
+import { DiscoveryView } from "./views/discovery-view";
+import { DistributionView } from "./views/distribution-view";
 import { OffersView } from "./views/offers-view";
 import { ProductsView } from "./views/products-view";
 import { SettingsView } from "./views/settings-view";
@@ -139,6 +141,20 @@ function AdminWorkspace({
         ) : null}
         {view === "stores" ? (
           <StoresView client={connection.client} refreshNonce={refreshNonce} />
+        ) : null}
+        {view === "discovery" ? (
+          <DiscoveryView
+            client={connection.client}
+            onNotify={notify}
+            refreshNonce={refreshNonce}
+          />
+        ) : null}
+        {view === "distribution" ? (
+          <DistributionView
+            client={connection.client}
+            onNotify={notify}
+            refreshNonce={refreshNonce}
+          />
         ) : null}
         {view === "crawls" ? (
           <CrawlsView

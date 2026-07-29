@@ -34,6 +34,11 @@ from bot_ofertas.api.schemas import (
     CrawlJobCreate,
     CrawlJobRead,
     CrawlRunRead,
+    DiscoveryBulkReview,
+    DiscoveryCandidateRead,
+    DiscoveryReview,
+    DiscoveryRunRead,
+    DiscoverySourceRead,
     HealthRead,
     ObservationRead,
     OfferRead,
@@ -47,9 +52,12 @@ from bot_ofertas.api.schemas import (
     RuntimePolicyPatch,
     RuntimePolicyRead,
     StoreRead,
+    TelegramDistributionStatusRead,
+    TelegramTestRead,
 )
 from bot_ofertas.api.service import (
     archive_product,
+    bulk_review_discovery_candidates,
     cancel_crawl_job,
     create_product,
     enqueue_crawl_job,
@@ -58,14 +66,21 @@ from bot_ofertas.api.service import (
     list_confirmations,
     list_crawl_jobs,
     list_crawl_runs,
+    list_discovery_candidates,
+    list_discovery_runs,
+    list_discovery_sources,
     list_observations,
     list_offers,
     list_products,
     list_stores,
     operations_status,
+    request_discovery_run,
+    review_discovery_candidate,
     runtime_policy,
+    send_telegram_beta_test,
     set_product_activation,
     set_product_variant,
+    telegram_distribution_status,
     update_product,
     update_runtime_policy,
 )
@@ -567,6 +582,150 @@ def cancel_job(
             job_id=job_id,
             requested_by=admin.subject,
         )
+    )
+
+
+@api_router.get(
+    "/discovery/sources",
+    response_model=list[DiscoverySourceRead],
+    tags=["discovery"],
+)
+def discovery_sources(
+    session: SessionDependency,
+    registry: RegistryDependency,
+) -> list[DiscoverySourceRead]:
+    return list_discovery_sources(session, registry)
+
+
+@api_router.post(
+    "/discovery/sources/{source_id}/run",
+    response_model=DiscoverySourceRead,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["discovery"],
+)
+def schedule_discovery_source(
+    source_id: UUID,
+    session: SessionDependency,
+    registry: RegistryDependency,
+) -> DiscoverySourceRead:
+    return request_discovery_run(
+        session,
+        registry,
+        source_id=source_id,
+    )
+
+
+@api_router.get(
+    "/discovery/candidates",
+    response_model=Page[DiscoveryCandidateRead],
+    tags=["discovery"],
+)
+def discovery_candidates(
+    session: SessionDependency,
+    cursor: Cursor = None,
+    limit: Limit = _DEFAULT_LIMIT,
+    candidate_status: Annotated[
+        Literal[
+            "pending",
+            "approved",
+            "rejected",
+            "duplicate",
+            "policy_blocked",
+            "unavailable",
+        ]
+        | None,
+        Query(alias="status"),
+    ] = "pending",
+    store_slug: Annotated[str | None, Query(max_length=64)] = None,
+    search: Annotated[str | None, Query(max_length=100)] = None,
+) -> Page[DiscoveryCandidateRead]:
+    return list_discovery_candidates(
+        session,
+        cursor=cursor,
+        limit=limit,
+        status=candidate_status,
+        store_slug=store_slug,
+        search=search,
+    )
+
+
+@api_router.get(
+    "/discovery/runs",
+    response_model=list[DiscoveryRunRead],
+    tags=["discovery"],
+)
+def discovery_runs(
+    session: SessionDependency,
+    limit: Limit = _DEFAULT_LIMIT,
+    store_slug: Annotated[str | None, Query(max_length=64)] = None,
+) -> list[DiscoveryRunRead]:
+    return list_discovery_runs(
+        session,
+        limit=limit,
+        store_slug=store_slug,
+    )
+
+
+@api_router.get(
+    "/distribution/telegram",
+    response_model=TelegramDistributionStatusRead,
+    tags=["distribution"],
+)
+def telegram_distribution(
+    session: SessionDependency,
+) -> TelegramDistributionStatusRead:
+    return telegram_distribution_status(session)
+
+
+@api_router.post(
+    "/distribution/telegram/test",
+    response_model=TelegramTestRead,
+    tags=["distribution"],
+)
+def test_telegram_distribution(
+    session: SessionDependency,
+    _admin: AdminDependency,
+) -> TelegramTestRead:
+    return send_telegram_beta_test(session)
+
+
+@api_router.post(
+    "/discovery/candidates/{candidate_id}/review",
+    response_model=DiscoveryCandidateRead,
+    tags=["discovery"],
+)
+def review_discovery(
+    candidate_id: UUID,
+    payload: DiscoveryReview,
+    session: SessionDependency,
+    registry: RegistryDependency,
+    admin: AdminDependency,
+) -> DiscoveryCandidateRead:
+    return review_discovery_candidate(
+        session,
+        registry,
+        candidate_id=candidate_id,
+        payload=payload,
+        reviewed_by=admin.subject,
+    )
+
+
+@api_router.post(
+    "/discovery/candidates/review",
+    response_model=list[DiscoveryCandidateRead],
+    tags=["discovery"],
+)
+def bulk_review_discovery(
+    payload: DiscoveryBulkReview,
+    session: SessionDependency,
+    registry: RegistryDependency,
+    admin: AdminDependency,
+) -> list[DiscoveryCandidateRead]:
+    return bulk_review_discovery_candidates(
+        session,
+        registry,
+        payload=payload,
+        reviewed_by=admin.subject,
     )
 
 

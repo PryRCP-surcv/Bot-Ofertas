@@ -9,7 +9,7 @@ from importlib import metadata
 from urllib.parse import urlsplit
 
 from bot_ofertas.crawling.spiders.base_product import BoundedProductSpider
-from bot_ofertas.stores.base import StoreAdapter, StorePolicy
+from bot_ofertas.stores.base import DiscoverySourceSpec, StoreAdapter, StorePolicy
 
 STORE_ADAPTER_ENTRY_POINT = "bot_ofertas.store_adapters"
 _SLUG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -104,6 +104,39 @@ class StoreRegistry:
             raise StoreRegistrationError(f"adapter {slug!r} policy exceeds its spider target limit")
 
         hosts = _normalize_hosts(raw_hosts)
+        discovery_sources = getattr(adapter, "discovery_sources", ())
+        if not isinstance(discovery_sources, tuple):
+            raise StoreRegistrationError(
+                f"adapter {slug!r} discovery_sources must be a tuple"
+            )
+        source_keys: set[str] = set()
+        source_urls: set[str] = set()
+        for source in discovery_sources:
+            if not isinstance(source, DiscoverySourceSpec):
+                raise StoreRegistrationError(
+                    f"adapter {slug!r} has an invalid discovery source"
+                )
+            source_host = (urlsplit(source.url).hostname or "").rstrip(".").lower()
+            if source_host not in hosts:
+                raise StoreRegistrationError(
+                    f"adapter {slug!r} discovery source belongs to an unowned host"
+                )
+            if source.key in source_keys:
+                raise StoreRegistrationError(
+                    f"adapter {slug!r} has duplicate discovery source key {source.key!r}"
+                )
+            if source.url in source_urls:
+                raise StoreRegistrationError(
+                    f"adapter {slug!r} has duplicate discovery source URL"
+                )
+            try:
+                re.compile(source.child_path_pattern)
+            except re.error as exc:
+                raise StoreRegistrationError(
+                    f"adapter {slug!r} has an invalid discovery child pattern"
+                ) from exc
+            source_keys.add(source.key)
+            source_urls.add(source.url)
         request_hosts = _normalize_hosts(getattr(spider_class, "request_hosts", ()))
         allowed_domains = _normalize_hosts(getattr(spider_class, "allowed_domains", ()))
         if not hosts:
@@ -248,11 +281,23 @@ def _plugin_adapter(loaded: object) -> StoreAdapter:
 def build_store_registry(*, include_plugins: bool = True) -> StoreRegistry:
     """Build the built-in registry and optionally add installed adapter plugins."""
 
+    from bot_ofertas.stores.cassinelli import CassinelliAdapter
     from bot_ofertas.stores.coolbox import CoolboxAdapter
+    from bot_ofertas.stores.curacao import CuracaoAdapter
+    from bot_ofertas.stores.efe import EfeAdapter
     from bot_ofertas.stores.oechsle import OechsleAdapter
     from bot_ofertas.stores.promart import PromartAdapter
 
-    registry = StoreRegistry([CoolboxAdapter(), OechsleAdapter(), PromartAdapter()])
+    registry = StoreRegistry(
+        [
+            CassinelliAdapter(),
+            CoolboxAdapter(),
+            CuracaoAdapter(),
+            EfeAdapter(),
+            OechsleAdapter(),
+            PromartAdapter(),
+        ]
+    )
     if not include_plugins:
         return registry
 

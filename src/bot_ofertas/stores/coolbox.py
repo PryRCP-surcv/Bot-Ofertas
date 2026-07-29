@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from bot_ofertas.crawling.coolbox import COOLBOX_HOSTS, normalize_coolbox_product_url
 from bot_ofertas.crawling.spiders.coolbox_product import CoolboxProductSpider
-from bot_ofertas.stores.base import StoreAdapter, StorePolicy
+from bot_ofertas.stores.base import DiscoverySourceSpec, StoreAdapter, StorePolicy
 
 
 class CoolboxAdapter(StoreAdapter):
@@ -19,6 +19,19 @@ class CoolboxAdapter(StoreAdapter):
         notes="Piloto habilitado sobre el catálogo público VTEX revisado.",
     )
     spider_class = CoolboxProductSpider
+    discovery_sources = (
+        DiscoverySourceSpec(
+            key="products-sitemap",
+            url="https://www.coolbox.pe/sitemap.xml",
+            max_candidates_per_run=100,
+            daily_approval_limit=20,
+            active_product_limit=500,
+            notes=(
+                "Índice oficial anunciado en robots.txt; se rota un sitemap "
+                "de productos por ejecución."
+            ),
+        ),
+    )
 
     def normalize_product_url(self, url: str) -> str:
         return normalize_coolbox_product_url(url)

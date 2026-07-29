@@ -95,6 +95,12 @@ la salud de la API. Al recuperarse el worker, recoge la cola.
 | `POST /api/v1/crawl-jobs/{id}/cancel` | Cancela un trabajo abierto |
 | `GET/PATCH /api/v1/settings` | Consulta o cambia la política versionada |
 | `GET /api/v1/operations/status` | Heartbeat, último ciclo y estado de la cola |
+| `GET /api/v1/discovery/sources` | Fuentes revisadas, límites y estado |
+| `POST /api/v1/discovery/sources/{id}/run` | Programa una fuente para el worker |
+| `GET /api/v1/discovery/candidates` | Candidatos deduplicados y filtrables |
+| `POST /api/v1/discovery/candidates/{id}/review` | Aprueba o rechaza un candidato |
+| `POST /api/v1/discovery/candidates/review` | Revisión transaccional de hasta 20 |
+| `GET /api/v1/discovery/runs` | Auditoría de corridas de descubrimiento |
 
 Las listas grandes usan `limit` y `cursor`; no se debe modificar ni construir
 manualmente el cursor devuelto como `next_cursor`.
@@ -247,7 +253,7 @@ Si `/health/ready` devuelve `503`, comprueba:
 ```
 
 La API requiere que PostgreSQL esté disponible, que Alembic esté en
-`0011_worker_watchdog_state` y que los adapters habilitados carguen sin errores.
+`0013_phase5_2_store_expansion` y que los adapters habilitados carguen sin errores.
 
 No ejecutes `alembic downgrade 0008_conditioned_offers` sin una copia de
 seguridad: el downgrade elimina la cola, las revisiones administrativas y los

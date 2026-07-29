@@ -7,10 +7,16 @@ def test_store_list_reports_enabled_adapter(capsys) -> None:
     assert main(["store", "list"]) == 0
 
     output = capsys.readouterr()
+    assert "Cassinelli (cassinelli) [habilitada]" in output.out
     assert "Coolbox (coolbox) [habilitada]" in output.out
+    assert "La Curacao (curacao) [habilitada]" in output.out
+    assert "EFE (efe) [habilitada]" in output.out
     assert "Oechsle (oechsle) [habilitada]" in output.out
     assert "Promart (promart) [habilitada]" in output.out
     assert "coolbox.pe" in output.out
+    assert "cassinelli.com" in output.out
+    assert "lacuracao.pe" in output.out
+    assert "efe.com.pe" in output.out
     assert "oechsle.pe" in output.out
     assert "promart.pe" in output.out
     assert output.err == ""

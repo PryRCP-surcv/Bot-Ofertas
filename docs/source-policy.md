@@ -1,6 +1,6 @@
 # Política de fuentes
 
-Última revisión: 28 de julio de 2026.
+Última revisión: 29 de julio de 2026.
 
 Este proyecto solo consulta recursos públicos para observar precios; no inicia
 sesión, no agrega productos al carrito y no realiza compras. Cada dominio
@@ -17,10 +17,16 @@ integración permanezca activa.
 - Usar un `User-Agent` honesto, propio y con un contacto válido antes de
   desplegar fuera del equipo local.
 - Obedecer `robots.txt` en cada ejecución.
-- Consultar únicamente URLs HTTPS de producto agregadas explícitamente.
-- No usar categorías, búsquedas ni sitemaps para descubrimiento durante estos
-  pilotos; los sitemaps citados abajo son evidencia pública, no una cola de
-  rastreo.
+- Para observar precios, consultar únicamente fichas HTTPS que ya estén en
+  `tracked_products`.
+- Para descubrir candidatos, usar solo fuentes declaradas por el adapter y
+  revisadas en esta política. En Fase 5.2 se admiten exclusivamente los
+  sitemaps oficiales de Coolbox, Oechsle, Promart, Cassinelli, EFE y La Curacao.
+- No usar búsquedas ni categorías. Cada ejecución de descubrimiento consulta
+  como máximo el índice, `robots.txt` cuando corresponda y un sitemap de
+  productos rotado; nunca recorre todos los archivos de una tienda a la vez.
+- Mantener los candidatos inactivos hasta aprobación administrativa. Descubrir
+  una URL no consulta su precio ni la incorpora automáticamente al monitoreo.
 - No visitar login, cuenta, carrito, checkout ni endpoints privados.
 - Mantener una sola solicitud concurrente por dominio, pausas conservadoras y
   `AutoThrottle`.
@@ -45,16 +51,62 @@ integración permanezca activa.
 
 ## Estado de tiendas evaluadas
 
-| Tienda | Estado al 2026-07-28 | Evidencia y decisión |
+| Tienda | Estado al 2026-07-29 | Evidencia y decisión |
 |---|---|---|
-| Coolbox | Piloto habilitado | Su [`robots.txt`](https://www.coolbox.pe/robots.txt) permite expresamente `/api/catalog_system/pub/`; las fichas y el catálogo público VTEX responden sin login. Sus [términos](https://www.coolbox.pe/terminos-y-condiciones) contemplan marketplace, condiciones por medio de pago y errores tipográficos. El [sitemap](https://www.coolbox.pe/sitemap.xml) solo se registró como evidencia. |
-| Oechsle | Piloto habilitado | Su [`robots.txt`](https://www.oechsle.pe/robots.txt) bloquea checkout y publica un [sitemap](https://www.oechsle.pe/sitemap.xml), sin bloquear las fichas `/p` ni el catálogo público usado por el adapter. Sus [términos](https://www.oechsle.pe/terminos-y-condiciones) advierten variaciones de precio, marketplace y promociones o cuotas con Tarjeta Oh!. Las pruebas y un rastreo vivo controlado de una ficha pasaron el 28 de julio de 2026. |
-| Promart | Piloto de historial habilitado; alertas bloqueadas | Su [`robots.txt`](https://www.promart.pe/robots.txt) bloquea checkout y publica un [sitemap](https://www.promart.pe/sitemap.xml); fichas y catálogo público VTEX respondieron sin login en la revisión. Sus [términos](https://www.promart.pe/terminos-y-condiciones) indican precios según ciudad de despacho, marketplace y posible anulación por error de digitación. Las pruebas y un rastreo vivo controlado de una ficha pasaron el 28 de julio de 2026. Toda observación conserva `location_context_unverified`, por lo que el detector no alerta hasta modelar una ubicación comprobable. |
+| Coolbox | Piloto y descubrimiento habilitados | Su [`robots.txt`](https://www.coolbox.pe/robots.txt) permite expresamente `/api/catalog_system/pub/` y anuncia el [sitemap](https://www.coolbox.pe/sitemap.xml). Las fichas y el catálogo público VTEX responden sin login. Sus [términos](https://www.coolbox.pe/terminos-y-condiciones) contemplan marketplace, condiciones por medio de pago y errores tipográficos. |
+| Oechsle | Piloto y descubrimiento habilitados | Su [`robots.txt`](https://www.oechsle.pe/robots.txt) bloquea checkout y publica un [sitemap](https://www.oechsle.pe/sitemap.xml), sin bloquear las fichas `/p` ni el catálogo público usado por el adapter. Sus [términos](https://www.oechsle.pe/terminos-y-condiciones) advierten variaciones de precio, marketplace y promociones o cuotas con Tarjeta Oh!. Las pruebas, un rastreo vivo controlado de una ficha y la primera vuelta acotada de descubrimiento pasaron entre el 28 y 29 de julio de 2026. |
+| Promart | Historial y descubrimiento habilitados; alertas bloqueadas | Su [`robots.txt`](https://www.promart.pe/robots.txt) bloquea checkout y publica un [sitemap](https://www.promart.pe/sitemap.xml); fichas y catálogo público VTEX respondieron sin login en la revisión. Sus [términos](https://www.promart.pe/terminos-y-condiciones) indican precios según ciudad de despacho, marketplace y posible anulación por error de digitación. Las pruebas, un rastreo vivo controlado de una ficha y la primera vuelta acotada de descubrimiento pasaron entre el 28 y 29 de julio de 2026. Toda observación conserva `location_context_unverified`, por lo que el detector no alerta hasta modelar una ubicación comprobable. |
+| Cassinelli | Piloto y descubrimiento habilitados | Su [`robots.txt`](https://www.cassinelli.com/robots.txt) separa rutas privadas de las fichas públicas. El [índice público revisado](https://www.cassinelli.com/sitemap.xml), las fichas y el catálogo VTEX respondieron sin login. Sus [términos](https://www.cassinelli.com/terminos-y-condiciones) describen venta web en Perú y precios en soles. Las bases variables por peso, superficie o longitud se guardan, pero bloquean alertas hasta representar la unidad exacta. |
+| EFE | Piloto y descubrimiento habilitados | Su [`robots.txt`](https://www.efe.com.pe/robots.txt) bloquea búsqueda, cuenta y checkout, y anuncia el [sitemap oficial](https://www.efe.com.pe/media/sitemap/sitemap_efe.xml). La ficha pública expone Product/Offer JSON-LD en PEN y precio HTML verificable. Sus [términos](https://www.efe.com.pe/terminos-y-condiciones) contemplan marketplace y señalan la ficha como referencia final. |
+| La Curacao | Piloto y descubrimiento habilitados | Su [`robots.txt`](https://www.lacuracao.pe/robots.txt) bloquea búsqueda, cuenta y checkout, y anuncia el [sitemap oficial](https://www.lacuracao.pe/media/sitemap/sitemap_curacao.xml). La ficha pública expone Product/Offer JSON-LD en PEN y precio HTML verificable. Sus [términos](https://www.lacuracao.pe/terminos-y-condiciones) contemplan marketplace y venta online en Perú. |
+| Tottus | Diferida | Su [`robots.txt`](https://www.tottus.com.pe/robots.txt) distingue fichas y rutas privadas, pero el sitemap revisado respondió de forma inestable y el catálogo depende de ubicación. No se fuerza la integración ni se intenta eludir esa indisponibilidad. |
 | plazaVea | Diferida | Aunque su [`robots.txt`](https://www.plazavea.com.pe/robots.txt) publica un [sitemap](https://www.plazavea.com.pe/sitemap.xml) y existe un catálogo público, sus [términos](https://www.plazavea.com.pe/terminos-y-condiciones) incluyen productos por peso, ubicación, marketplace, sustituciones y reacondicionados. Se difiere hasta modelar correctamente esas dimensiones. |
 | Hiraoka | No integrar | Su [`robots.txt`](https://hiraoka.com.pe/robots.txt) bloquea expresamente `User-agent: Scrapy`; además, sus [términos](https://hiraoka.com.pe/terminos-y-condiciones) restringen la extracción y reutilización del sitio. |
 | Ripley | No integrar | La consulta directa incluso de su [`robots.txt`](https://simple.ripley.com.pe/robots.txt) recibió una página de bloqueo del perímetro. Sus [términos oficiales](https://simple.ripley.com.pe/minisitios/especial/servicio-al-cliente/terminos-condiciones/index.html) también describen Mercado Ripley y precios variables. No se intentará evadir el bloqueo. |
 | Tai Loy | No integrar | Su [`robots.txt`](https://www.tailoy.com.pe/robots.txt) solo declara agentes concretos y publica un sitemap; no ofrece una autorización general. Sus [términos](https://www.tailoy.com.pe/terminos-y-condiciones) restringen reproducción, puesta a disposición y reutilización sin autorización escrita. |
 | Memory Kings | No integrar | Su [`robots.txt`](https://www.memorykings.pe/robots.txt) bloquea expresamente varios agentes de IA y no se localizó una página oficial de términos generales de uso entre los enlaces públicos revisados. La [política de datos](https://www.memorykings.pe/ley-proteccion-datos) no sustituye esa autorización. No se integrará sin aclaración escrita. |
+
+## Descubrimiento controlado de Fases 5.1 y 5.2
+
+- Fuentes activas: los seis índices oficiales ya citados.
+- Frecuencia mínima: una vuelta por fuente cada 1.440 minutos.
+- Presupuesto por vuelta: dos documentos de sitemap como máximo, además de la
+  comprobación de `robots.txt` realizada por Scrapy.
+- Rotación: el índice selecciona un único archivo cuyo path coincida
+  exactamente con `/sitemap/product-N.xml`; el cursor persistente continúa con
+  otro archivo en la siguiente vuelta.
+- Volumen: hasta 100 candidatos en Coolbox y 75 en Oechsle o Promart por
+  ejecución; Cassinelli, EFE y La Curacao incorporan hasta 50 por ejecución.
+  Un candidato repetido se actualiza, no se duplica.
+- Activación: manual desde el panel o la API, con 20 aprobaciones diarias para
+  Coolbox y 15 para Oechsle o Promart. Los máximos activos iniciales son 500,
+  400 y 400 respectivamente.
+- Seguridad: solo HTTPS, mismo hostname revisado, sin credenciales, puertos
+  alternativos, redirects externos, DTD ni entidades XML. Un 403, 429, 503,
+  bloqueo o CAPTCHA pausa la tienda y no se intenta evadirlo.
+- Promart conserva `location_context_unverified`: aprobar una URL permite
+  historial, pero no elimina el bloqueo de alertas.
+- Los sitemaps Magento de EFE y La Curacao mezclan categorías y productos. El
+  parser solo toma entradas que incluyen la extensión estándar `image:image`;
+  después el adapter vuelve a exigir una ficha raíz `.html` exacta.
+
+## Alcance de las tiendas incorporadas en Fase 5.2
+
+- Cassinelli acepta exclusivamente fichas `/slug/p` y usa su endpoint público
+  VTEX. Opera con un intervalo mínimo de 60 minutos, hasta 10 productos por
+  corrida, 50 candidatos por descubrimiento y 10 aprobaciones diarias.
+- EFE y La Curacao aceptan únicamente fichas raíz `producto.html`. Cada página
+  debe contener exactamente un Product y un Offer JSON-LD que correspondan a
+  la URL solicitada.
+- El precio actual de EFE y La Curacao proviene del Offer JSON-LD y debe
+  concordar con `data-price-type="finalPrice"` del HTML. El precio de lista se
+  toma de `oldPrice`; una discrepancia bloquea la alerta.
+- Las tres integraciones conservan moneda, stock, SKU y vendedor. EFE y La
+  Curacao reconocen al vendedor propio por nombre; los demás quedan marcados
+  como marketplace.
+- Los smoke tests del 29 de julio de 2026 verificaron una ficha pública en PEN
+  para cada una de las tres tiendas, sin iniciar sesión ni visitar carrito o
+  checkout.
 
 ## Alcance de Coolbox
 

@@ -20,6 +20,11 @@ from bot_ofertas.api.schemas import (
     CrawlJobCreate,
     CrawlJobRead,
     CrawlRunRead,
+    DiscoveryBulkReview,
+    DiscoveryCandidateRead,
+    DiscoveryReview,
+    DiscoveryRunRead,
+    DiscoverySourceRead,
     ObservationRead,
     OfferRead,
     OperationsStatusRead,
@@ -32,9 +37,12 @@ from bot_ofertas.api.schemas import (
     RuntimePolicyPatch,
     RuntimePolicyRead,
     StoreRead,
+    TelegramDistributionStatusRead,
+    TelegramTestRead,
 )
 from bot_ofertas.detection import canonicalize_variant
 from bot_ofertas.domain import Availability
+from bot_ofertas.notifications import TelegramNotifier
 from bot_ofertas.services.operations import read_operations_snapshot
 from bot_ofertas.services.runtime_policy import (
     EffectiveRuntimePolicy,
@@ -45,11 +53,15 @@ from bot_ofertas.storage.admin import (
     CrawlJobRepository,
     OptimisticConcurrencyError,
 )
+from bot_ofertas.storage.discovery import DiscoveryRepository
 from bot_ofertas.storage.models import (
     CrawlJob,
     CrawlJobStatus,
     CrawlRun,
     DealDetection,
+    DiscoveryCandidate,
+    DiscoveryRun,
+    NotificationDelivery,
     OfferConfirmationState,
     PriceObservationRecord,
     StoreCrawlState,
@@ -82,10 +94,100 @@ class InvalidRuntimePolicyError(ValueError):
     pass
 
 
+class InvalidDiscoveryRequestError(ValueError):
+    pass
+
+
 def operations_status(session: Session) -> OperationsStatusRead:
     """Return worker freshness and queue pressure without affecting readiness."""
 
     return OperationsStatusRead.model_validate(read_operations_snapshot(session))
+
+
+def telegram_distribution_status(
+    session: Session,
+) -> TelegramDistributionStatusRead:
+    """Expose safe beta-channel readiness and durable queue pressure."""
+
+    settings = resolve_runtime_policy(session).settings
+    configured = bool(settings.telegram_token and settings.telegram_chat_id)
+    queue_counts = {
+        "pending": 0,
+        "retrying": 0,
+        "sent": 0,
+        "failed": 0,
+        "superseded": 0,
+    }
+    for delivery_status, count in session.execute(
+        select(
+            NotificationDelivery.status,
+            func.count(NotificationDelivery.id),
+        )
+        .where(NotificationDelivery.channel == "telegram")
+        .group_by(NotificationDelivery.status)
+    ):
+        if delivery_status in queue_counts:
+            queue_counts[delivery_status] = int(count)
+    last_sent_at = session.scalar(
+        select(func.max(NotificationDelivery.sent_at)).where(
+            NotificationDelivery.channel == "telegram",
+            NotificationDelivery.status == "sent",
+        )
+    )
+    last_failure = session.scalar(
+        select(NotificationDelivery)
+        .where(
+            NotificationDelivery.channel == "telegram",
+            NotificationDelivery.last_error.is_not(None),
+        )
+        .order_by(
+            NotificationDelivery.updated_at.desc(),
+            NotificationDelivery.id.desc(),
+        )
+        .limit(1)
+    )
+    ready = settings.telegram_enabled and configured
+    return TelegramDistributionStatusRead(
+        enabled=settings.telegram_enabled,
+        configured=configured,
+        ready=ready,
+        audience_mode="single_chat",
+        membership_mode="manual",
+        payment_mode="manual_external",
+        automatic_offer_delivery=ready,
+        queue_counts=queue_counts,
+        last_sent_at=last_sent_at,
+        last_error_at=last_failure.updated_at if last_failure else None,
+        last_error_code=last_failure.last_error_code if last_failure else None,
+        last_error=last_failure.last_error if last_failure else None,
+    )
+
+
+def send_telegram_beta_test(
+    session: Session,
+    *,
+    notifier: TelegramNotifier | None = None,
+) -> TelegramTestRead:
+    """Send one fixed, non-user-controlled message to the configured beta audience."""
+
+    settings = resolve_runtime_policy(session).settings
+    channel = notifier or TelegramNotifier(
+        token=settings.telegram_token,
+        chat_id=settings.telegram_chat_id,
+        enabled=settings.telegram_enabled,
+        timeout_seconds=8,
+    )
+    result = channel.send_text(
+        "✅ Bot Ofertas Perú está conectado.\n"
+        "Este es un mensaje de prueba del canal beta. "
+        "Las ofertas confirmadas llegarán automáticamente aquí."
+    )
+    return TelegramTestRead(
+        status=result.status.value,
+        sent=result.sent,
+        message_id=result.message_id,
+        detail=result.detail,
+    )
 
 
 def _page_size(limit: int) -> int:
@@ -1061,6 +1163,199 @@ def _runtime_policy_read(effective: EffectiveRuntimePolicy) -> RuntimePolicyRead
     )
 
 
+def list_discovery_sources(
+    session: Session,
+    registry: StoreRegistry,
+) -> list[DiscoverySourceRead]:
+    repository = DiscoveryRepository(session)
+    repository.sync_registry(registry)
+    counts: dict[UUID, dict[str, int]] = {}
+    for source_id, candidate_status, count in session.execute(
+        select(
+            DiscoveryCandidate.source_id,
+            DiscoveryCandidate.status,
+            func.count(DiscoveryCandidate.id),
+        ).group_by(
+            DiscoveryCandidate.source_id,
+            DiscoveryCandidate.status,
+        )
+    ):
+        counts.setdefault(source_id, {})[candidate_status] = int(count)
+    return [
+        DiscoverySourceRead.model_validate(source).model_copy(
+            update={"candidate_counts": counts.get(source.id, {})}
+        )
+        for source in repository.list_sources()
+    ]
+
+
+def request_discovery_run(
+    session: Session,
+    registry: StoreRegistry,
+    *,
+    source_id: UUID,
+) -> DiscoverySourceRead:
+    repository = DiscoveryRepository(session)
+    repository.sync_registry(registry)
+    try:
+        source = repository.request_run(source_id)
+    except ValueError as error:
+        raise InvalidDiscoveryRequestError(str(error)) from error
+    return DiscoverySourceRead.model_validate(source).model_copy(
+        update={"candidate_counts": {}}
+    )
+
+
+def list_discovery_candidates(
+    session: Session,
+    *,
+    cursor: str | None,
+    limit: int,
+    status: str | None,
+    store_slug: str | None,
+    search: str | None,
+) -> Page[DiscoveryCandidateRead]:
+    page_size = _page_size(limit)
+    normalized_status = status.strip().lower() if status else None
+    normalized_store = store_slug.strip().lower() if store_slug else None
+    normalized_search = _search_term(search)
+    scope = cursor_scope(
+        "discovery-candidates",
+        status=normalized_status,
+        store_slug=normalized_store,
+        search=normalized_search,
+    )
+    filters = []
+    if normalized_status:
+        filters.append(DiscoveryCandidate.status == normalized_status)
+    if normalized_store:
+        filters.append(DiscoveryCandidate.store_slug == normalized_store)
+    if normalized_search:
+        term = f"%{_escaped_like(normalized_search)}%"
+        filters.append(
+            or_(
+                DiscoveryCandidate.label.ilike(term, escape="\\"),
+                DiscoveryCandidate.canonical_url.ilike(term, escape="\\"),
+            )
+        )
+    if cursor is not None:
+        position = decode_cursor(cursor, scope=scope)
+        candidate_id = _cursor_uuid(position.key)
+        filters.append(
+            or_(
+                DiscoveryCandidate.last_seen_at < position.timestamp,
+                and_(
+                    DiscoveryCandidate.last_seen_at == position.timestamp,
+                    DiscoveryCandidate.id < candidate_id,
+                ),
+            )
+        )
+    rows = list(
+        session.scalars(
+            select(DiscoveryCandidate)
+            .where(*filters)
+            .order_by(
+                DiscoveryCandidate.last_seen_at.desc(),
+                DiscoveryCandidate.id.desc(),
+            )
+            .limit(page_size + 1)
+        )
+    )
+    has_more = len(rows) > page_size
+    visible = rows[:page_size]
+    return Page(
+        items=[
+            DiscoveryCandidateRead.model_validate(candidate)
+            for candidate in visible
+        ],
+        limit=page_size,
+        has_more=has_more,
+        next_cursor=(
+            encode_cursor(
+                scope=scope,
+                timestamp=visible[-1].last_seen_at,
+                key=str(visible[-1].id),
+            )
+            if has_more
+            else None
+        ),
+    )
+
+
+def list_discovery_runs(
+    session: Session,
+    *,
+    limit: int,
+    store_slug: str | None,
+) -> list[DiscoveryRunRead]:
+    page_size = _page_size(limit)
+    statement = select(DiscoveryRun)
+    if store_slug:
+        statement = statement.where(
+            DiscoveryRun.store_slug == store_slug.strip().lower()
+        )
+    runs = session.scalars(
+        statement.order_by(
+            DiscoveryRun.started_at.desc(),
+            DiscoveryRun.id.desc(),
+        ).limit(page_size)
+    )
+    return [DiscoveryRunRead.model_validate(run) for run in runs]
+
+
+def review_discovery_candidate(
+    session: Session,
+    registry: StoreRegistry,
+    *,
+    candidate_id: UUID,
+    payload: DiscoveryReview,
+    reviewed_by: str,
+) -> DiscoveryCandidateRead:
+    repository = DiscoveryRepository(session)
+    try:
+        if payload.action == "approve":
+            candidate = repository.approve_candidate(
+                candidate_id,
+                reviewed_by=reviewed_by,
+                registry=registry,
+                label=payload.label,
+            )
+        else:
+            candidate = repository.reject_candidate(
+                candidate_id,
+                reviewed_by=reviewed_by,
+                reason=payload.reason or "",
+            )
+    except ValueError as error:
+        raise InvalidDiscoveryRequestError(str(error)) from error
+    return DiscoveryCandidateRead.model_validate(candidate)
+
+
+def bulk_review_discovery_candidates(
+    session: Session,
+    registry: StoreRegistry,
+    *,
+    payload: DiscoveryBulkReview,
+    reviewed_by: str,
+) -> list[DiscoveryCandidateRead]:
+    results: list[DiscoveryCandidateRead] = []
+    for candidate_id in payload.candidate_ids:
+        results.append(
+            review_discovery_candidate(
+                session,
+                registry,
+                candidate_id=candidate_id,
+                payload=DiscoveryReview(
+                    action=payload.action,
+                    label=payload.label,
+                    reason=payload.reason,
+                ),
+                reviewed_by=reviewed_by,
+            )
+        )
+    return results
+
+
 def runtime_policy(session: Session) -> RuntimePolicyRead:
     return _runtime_policy_read(resolve_runtime_policy(session))
 
@@ -1094,9 +1389,11 @@ __all__ = [
     "CrawlJobNotFoundError",
     "InvalidCrawlJobRequestError",
     "InvalidRuntimePolicyError",
+    "InvalidDiscoveryRequestError",
     "ProductNotFoundError",
     "UnsafeProductConfigurationError",
     "archive_product",
+    "bulk_review_discovery_candidates",
     "cancel_crawl_job",
     "create_product",
     "enqueue_crawl_job",
@@ -1105,11 +1402,16 @@ __all__ = [
     "list_confirmations",
     "list_crawl_jobs",
     "list_crawl_runs",
+    "list_discovery_candidates",
+    "list_discovery_runs",
+    "list_discovery_sources",
     "list_observations",
     "list_offers",
     "list_products",
     "list_stores",
     "runtime_policy",
+    "request_discovery_run",
+    "review_discovery_candidate",
     "set_product_activation",
     "set_product_variant",
     "update_runtime_policy",

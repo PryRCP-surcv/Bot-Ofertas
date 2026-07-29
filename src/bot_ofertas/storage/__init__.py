@@ -15,6 +15,13 @@ from bot_ofertas.storage.database import (
     create_session_factory,
     session_scope,
 )
+from bot_ofertas.storage.discovery import (
+    CandidateRecordResult,
+    DiscoveryClaim,
+    DiscoveryLeaseLostError,
+    DiscoveryRepository,
+    DiscoveryReviewError,
+)
 from bot_ofertas.storage.models import (
     AdminConfigRevision,
     Base,
@@ -25,6 +32,11 @@ from bot_ofertas.storage.models import (
     CrawlRun,
     CrawlRunStatus,
     DealDetection,
+    DiscoveryCandidate,
+    DiscoveryCandidateStatus,
+    DiscoveryRun,
+    DiscoveryRunStatus,
+    DiscoverySource,
     NotificationDelivery,
     OfferAlertState,
     PriceObservationRecord,
@@ -67,6 +79,15 @@ __all__ = [
     "CrawlRunStatus",
     "DatabaseSettings",
     "DealDetection",
+    "DiscoveryCandidate",
+    "DiscoveryCandidateStatus",
+    "DiscoveryClaim",
+    "DiscoveryLeaseLostError",
+    "DiscoveryRepository",
+    "DiscoveryReviewError",
+    "DiscoveryRun",
+    "DiscoveryRunStatus",
+    "DiscoverySource",
     "IdempotencyConflictError",
     "LeaseLostError",
     "NotificationDelivery",
@@ -94,4 +115,5 @@ __all__ = [
     "create_database_engine",
     "create_session_factory",
     "session_scope",
+    "CandidateRecordResult",
 ]

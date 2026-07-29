@@ -8,6 +8,12 @@ import type {
   CrawlJobRead,
   CrawlRunListParams,
   CrawlRunRead,
+  DiscoveryBulkReview,
+  DiscoveryCandidateListParams,
+  DiscoveryCandidateRead,
+  DiscoveryReview,
+  DiscoveryRunRead,
+  DiscoverySourceRead,
   HealthRead,
   ObservationRead,
   OperationsStatusRead,
@@ -25,6 +31,8 @@ import type {
   RuntimePolicyPatch,
   RuntimePolicyRead,
   StoreRead,
+  TelegramDistributionStatusRead,
+  TelegramTestRead,
   UUID,
 } from "./types";
 
@@ -456,6 +464,83 @@ export class ApiClient {
   ): Promise<ApiResponse<CrawlJobRead>> {
     return this.request<CrawlJobRead>(
       `/api/v1/crawl-jobs/${encodeURIComponent(jobId)}/cancel`,
+      { method: "POST", signal },
+    );
+  }
+
+  async listDiscoverySources(
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<DiscoverySourceRead[]>> {
+    return this.request<DiscoverySourceRead[]>("/api/v1/discovery/sources", {
+      signal,
+    });
+  }
+
+  async scheduleDiscoverySource(
+    sourceId: UUID,
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<DiscoverySourceRead>> {
+    return this.request<DiscoverySourceRead>(
+      `/api/v1/discovery/sources/${encodeURIComponent(sourceId)}/run`,
+      { method: "POST", signal },
+    );
+  }
+
+  async listDiscoveryCandidates(
+    params: DiscoveryCandidateListParams = {},
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<Page<DiscoveryCandidateRead>>> {
+    return this.request<Page<DiscoveryCandidateRead>>(
+      appendQuery("/api/v1/discovery/candidates", params),
+      { signal },
+    );
+  }
+
+  async listDiscoveryRuns(
+    params: { limit?: number; store_slug?: string } = {},
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<DiscoveryRunRead[]>> {
+    return this.request<DiscoveryRunRead[]>(
+      appendQuery("/api/v1/discovery/runs", params),
+      { signal },
+    );
+  }
+
+  async reviewDiscoveryCandidate(
+    candidateId: UUID,
+    payload: DiscoveryReview,
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<DiscoveryCandidateRead>> {
+    return this.request<DiscoveryCandidateRead>(
+      `/api/v1/discovery/candidates/${encodeURIComponent(candidateId)}/review`,
+      { method: "POST", body: payload, signal },
+    );
+  }
+
+  async bulkReviewDiscoveryCandidates(
+    payload: DiscoveryBulkReview,
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<DiscoveryCandidateRead[]>> {
+    return this.request<DiscoveryCandidateRead[]>(
+      "/api/v1/discovery/candidates/review",
+      { method: "POST", body: payload, signal },
+    );
+  }
+
+  async getTelegramDistribution(
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<TelegramDistributionStatusRead>> {
+    return this.request<TelegramDistributionStatusRead>(
+      "/api/v1/distribution/telegram",
+      { signal },
+    );
+  }
+
+  async testTelegramDistribution(
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<TelegramTestRead>> {
+    return this.request<TelegramTestRead>(
+      "/api/v1/distribution/telegram/test",
       { method: "POST", signal },
     );
   }

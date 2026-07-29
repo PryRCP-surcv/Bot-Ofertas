@@ -334,6 +334,122 @@ class CrawlJobRead(ApiModel):
     items: list[CrawlJobItemRead]
 
 
+class DiscoverySourceRead(ApiModel):
+    id: UUID
+    store_slug: str
+    source_key: str
+    source_type: str
+    source_url: str
+    enabled: bool
+    minimum_interval_minutes: int
+    max_documents_per_run: int
+    max_candidates_per_run: int
+    daily_approval_limit: int
+    active_product_limit: int
+    url_entry_filter: str
+    notes: str
+    scan_cursor: int
+    next_run_at: datetime
+    last_started_at: datetime | None
+    last_finished_at: datetime | None
+    last_status: str
+    last_error_code: str | None
+    last_error: str | None
+    version: int
+    candidate_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class DiscoveryRunRead(ApiModel):
+    id: UUID
+    source_id: UUID
+    store_slug: str
+    status: str
+    requested_by: str
+    document_count: int
+    candidate_count: int
+    new_count: int
+    duplicate_count: int
+    rejected_count: int
+    error_count: int
+    error_code: str | None
+    error_summary: str | None
+    stats: dict[str, object]
+    started_at: datetime
+    finished_at: datetime | None
+
+
+class DiscoveryCandidateRead(ApiModel):
+    id: UUID
+    source_id: UUID
+    latest_run_id: UUID
+    tracked_product_id: UUID | None
+    store_slug: str
+    discovered_url: str
+    canonical_url: str
+    label: str
+    status: str
+    reason: str | None
+    discovery_metadata: dict[str, object]
+    first_seen_at: datetime
+    last_seen_at: datetime
+    reviewed_by: str | None
+    reviewed_at: datetime | None
+    version: int
+
+
+class DiscoveryReview(ApiModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["approve", "reject"]
+    label: str | None = Field(default=None, max_length=500)
+    reason: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_action_fields(self) -> DiscoveryReview:
+        if self.action == "reject" and not (self.reason or "").strip():
+            raise ValueError("reason es obligatorio al rechazar")
+        if self.action == "approve" and self.reason is not None:
+            raise ValueError("reason no aplica al aprobar")
+        if self.label is not None:
+            self.label = " ".join(self.label.split()) or None
+        if self.reason is not None:
+            self.reason = " ".join(self.reason.split()) or None
+        return self
+
+
+class DiscoveryBulkReview(DiscoveryReview):
+    candidate_ids: list[UUID] = Field(min_length=1, max_length=20)
+
+    @field_validator("candidate_ids")
+    @classmethod
+    def unique_candidates(cls, value: list[UUID]) -> list[UUID]:
+        if len(value) != len(set(value)):
+            raise ValueError("candidate_ids no puede contener duplicados")
+        return value
+
+
+class TelegramDistributionStatusRead(ApiModel):
+    enabled: bool
+    configured: bool
+    ready: bool
+    audience_mode: Literal["single_chat"]
+    membership_mode: Literal["manual"]
+    payment_mode: Literal["manual_external"]
+    automatic_offer_delivery: bool
+    queue_counts: dict[str, int] = Field(default_factory=dict)
+    last_sent_at: datetime | None
+    last_error_at: datetime | None
+    last_error_code: str | None
+    last_error: str | None
+
+
+class TelegramTestRead(ApiModel):
+    status: Literal["sent", "failed", "disabled"]
+    sent: bool
+    message_id: str | None
+    detail: str | None
+
+
 class RuntimePolicyRead(ApiModel):
     revision_id: int | None
     policy_fingerprint: str
@@ -449,6 +565,11 @@ __all__ = [
     "CrawlJobItemRead",
     "CrawlJobRead",
     "CrawlRunRead",
+    "DiscoveryBulkReview",
+    "DiscoveryCandidateRead",
+    "DiscoveryReview",
+    "DiscoveryRunRead",
+    "DiscoverySourceRead",
     "HealthRead",
     "ObservationRead",
     "OfferRead",
@@ -461,4 +582,6 @@ __all__ = [
     "RuntimePolicyRead",
     "RuntimePolicyPatch",
     "StoreRead",
+    "TelegramDistributionStatusRead",
+    "TelegramTestRead",
 ]

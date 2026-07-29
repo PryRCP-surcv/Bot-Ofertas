@@ -152,3 +152,12 @@ export function AlertIcon(props: IconProps) {
     </IconBase>
   );
 }
+
+export function PaperPlaneIcon(props: IconProps) {
+  return (
+    <IconBase {...props}>
+      <path d="m3 11 17-8-6.5 18-3.5-7-7-3Z" {...strokeProps} />
+      <path d="m10 14 4-4" {...strokeProps} />
+    </IconBase>
+  );
+}

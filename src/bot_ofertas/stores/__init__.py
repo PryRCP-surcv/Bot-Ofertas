@@ -1,6 +1,6 @@
 """Public store adapter registry API."""
 
-from bot_ofertas.stores.base import StoreAdapter, StorePolicy
+from bot_ofertas.stores.base import DiscoverySourceSpec, StoreAdapter, StorePolicy
 from bot_ofertas.stores.registry import (
     STORE_ADAPTER_ENTRY_POINT,
     StoreDisabledError,
@@ -14,6 +14,7 @@ from bot_ofertas.stores.registry import (
 )
 
 __all__ = [
+    "DiscoverySourceSpec",
     "STORE_ADAPTER_ENTRY_POINT",
     "StoreAdapter",
     "StoreDisabledError",

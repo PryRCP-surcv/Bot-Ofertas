@@ -35,7 +35,7 @@ Abre `http://localhost:3000`. Introduce:
 - API: `http://127.0.0.1:8000`
 - Token: el valor real de `BOT_API_ADMIN_TOKEN` guardado en el `.env` de la raíz
 
-La API y el panel solo escuchan en `localhost`. Los futuros clientes reciben
+La API y el panel solo escuchan en `localhost`. Los suscriptores beta reciben
 alertas por Telegram y no acceden al panel. La disponibilidad depende de que la
 PC, Docker Desktop e Internet permanezcan activos.
 
@@ -79,6 +79,11 @@ la credencial no se persista.
 - **Ofertas:** activas, por confirmar e historial con filtros y evidencia.
 - **Productos:** alta, edición, activación, historial y archivado lógico.
 - **Tiendas:** estado y límites de cada adapter, en modo lectura.
+- **Descubrimiento:** fuentes públicas revisadas, programación, candidatos,
+  aprobación o rechazo y auditoría de corridas.
+- **Distribución:** estado del único grupo/canal beta de Telegram, cola durable,
+  último envío/error y prueba fija del destino. Las altas, bajas y cobros de
+  suscriptores siguen siendo manuales.
 - **Rastreo:** elegibilidad, selección de productos, confirmación antes de
   encolar, cancelación, corridas Scrapy, heartbeat y último ciclo del worker.
 - **Configuración:** política versionada con ETag, idempotencia y motivo de
