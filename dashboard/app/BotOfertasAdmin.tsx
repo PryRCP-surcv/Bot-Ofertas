@@ -17,6 +17,7 @@ import { OffersView } from "./views/offers-view";
 import { ProductsView } from "./views/products-view";
 import { SettingsView } from "./views/settings-view";
 import { StoresView } from "./views/stores-view";
+import { SubscribersView } from "./views/subscribers-view";
 import { SummaryView } from "./views/summary-view";
 
 interface ToastState {
@@ -151,6 +152,13 @@ function AdminWorkspace({
         ) : null}
         {view === "distribution" ? (
           <DistributionView
+            client={connection.client}
+            onNotify={notify}
+            refreshNonce={refreshNonce}
+          />
+        ) : null}
+        {view === "subscribers" ? (
+          <SubscribersView
             client={connection.client}
             onNotify={notify}
             refreshNonce={refreshNonce}

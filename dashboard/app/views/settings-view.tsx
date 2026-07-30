@@ -406,14 +406,14 @@ export function SettingsView({
             onChange={(value) => setValue("telegram_enabled", value)}
           />
           <NumberField
-            label="Espera entre alertas (horas)"
+            label="Espera mínima tras reaparición (horas)"
             max={720}
             min={1}
             onChange={(value) => setValue("alert_cooldown_hours", value)}
             value={form.alert_cooldown_hours}
           />
           <NumberField
-            label="Mejora para repetir alerta (%)"
+            label="Mejora para alertar durante el episodio (%)"
             max={99}
             min={0}
             onChange={(value) =>

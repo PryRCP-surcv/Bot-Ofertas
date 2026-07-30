@@ -22,6 +22,7 @@ from bot_ofertas.storage import DatabaseSettings, create_database_engine
 from bot_ofertas.storage.models import (
     DealDetection,
     NotificationDelivery,
+    OfferAlertState,
     TrackedProduct,
 )
 from bot_ofertas.storage.notifications import NotificationDeliveryRepository
@@ -266,6 +267,132 @@ def test_detection_dedupe_and_retryable_telegram_delivery_are_transactional() ->
                 )
             assert remaining == 0
     finally:
+        engine.dispose()
+
+
+def test_unchanged_offer_is_suppressed_until_a_new_episode() -> None:
+    engine = create_database_engine(DatabaseSettings.from_env())
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, expire_on_commit=False)
+    suffix = uuid4().hex
+    settings = RuntimeSettings(
+        detector_version="episode-dedupe-v1",
+        confirmation_required=False,
+        minimum_alert_confidence=0,
+        detection_history_limit=20,
+        alert_cooldown_hours=24,
+        alert_significant_improvement_ratio=Decimal("0.05"),
+        detector_config=DetectorConfig(minimum_history_samples=1),
+    )
+    started_at = datetime(2026, 7, 27, 14, 0, tzinfo=UTC)
+
+    try:
+        source_url = f"https://www.coolbox.pe/episode-{suffix}/p"
+        product = TrackedProductRepository(session).add(
+            store_slug="coolbox",
+            source_url=source_url,
+            label="Producto con episodio persistente",
+        )
+        observations = PriceObservationRepository(session)
+
+        def observe(*, hours: int, price: str, marker: str):
+            observed_at = started_at + timedelta(hours=hours)
+            run = CrawlRunRepository(session).start(
+                store_slug="coolbox",
+                spider_name="episode_dedupe_integration",
+                requested_url_count=1,
+                started_at=observed_at,
+            )
+            saved = observations.save(
+                run_id=run.id,
+                observation=_observation(
+                    tracked_product_id=product.id,
+                    source_url=source_url,
+                    observed_at=observed_at,
+                    price=price,
+                    payload_marker=f"{suffix}-{marker}",
+                ),
+            )
+            summary = DetectionService(session, settings).process_new()
+            detection = session.scalar(
+                select(DealDetection).where(
+                    DealDetection.observation_id == saved.observation_id
+                )
+            )
+            assert detection is not None
+            return summary, detection
+
+        first_summary, first = observe(
+            hours=0,
+            price="50.00",
+            marker="first",
+        )
+        assert first_summary.notifications_reserved == 1
+        assert first.notification_status == "pending"
+        state = session.scalar(
+            select(OfferAlertState).where(
+                OfferAlertState.offer_key == first.offer_key,
+                OfferAlertState.channel == "telegram",
+            )
+        )
+        assert state is not None
+        state.last_reserved_at = datetime.now(UTC) - timedelta(hours=25)
+        first_delivery = session.scalar(
+            select(NotificationDelivery).where(
+                NotificationDelivery.detection_id == first.id
+            )
+        )
+        assert first_delivery is not None
+        first_delivery.status = "sent"
+        first_delivery.sent_at = datetime.now(UTC) - timedelta(hours=25)
+        first.notification_status = "sent"
+        session.flush()
+
+        unchanged_summary, unchanged = observe(
+            hours=25,
+            price="50.00",
+            marker="unchanged-after-cooldown",
+        )
+        assert unchanged_summary.notifications_reserved == 0
+        assert unchanged_summary.duplicates_suppressed == 1
+        assert unchanged.notification_status == "suppressed"
+
+        normal_summary, normal = observe(
+            hours=26,
+            price="100.00",
+            marker="normal-price",
+        )
+        assert normal_summary.notifications_reserved == 0
+        assert normal.classification == "none"
+        assert state.episode_active is False
+        assert state.last_inactive_at is not None
+
+        reappeared_summary, reappeared = observe(
+            hours=27,
+            price="50.00",
+            marker="reappeared",
+        )
+        assert reappeared_summary.notifications_reserved == 1
+        assert reappeared.notification_status == "pending"
+        assert state.episode_active is True
+        assert state.last_seen_at is not None
+        assert state.last_seen_at >= state.last_inactive_at
+
+        delivery_count = session.scalar(
+            select(func.count())
+            .select_from(NotificationDelivery)
+            .join(
+                DealDetection,
+                DealDetection.id == NotificationDelivery.detection_id,
+            )
+            .where(DealDetection.tracked_product_id == product.id)
+        )
+        assert delivery_count == 2
+    finally:
+        session.close()
+        transaction.rollback()
+        connection.close()
         engine.dispose()
 
 

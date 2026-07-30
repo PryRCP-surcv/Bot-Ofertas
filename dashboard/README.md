@@ -82,8 +82,11 @@ la credencial no se persista.
 - **Descubrimiento:** fuentes públicas revisadas, programación, candidatos,
   aprobación o rechazo y auditoría de corridas.
 - **Distribución:** estado del único grupo/canal beta de Telegram, cola durable,
-  último envío/error y prueba fija del destino. Las altas, bajas y cobros de
-  suscriptores siguen siendo manuales.
+  último envío/error y prueba fija del destino.
+- **Suscriptores:** vigencias, estados comerciales, acceso manual al grupo,
+  pagos externos confirmados, renovaciones, historial y lista de lanzamiento.
+  El panel registra la operación, pero las altas, bajas y cobros siguen
+  realizándose manualmente.
 - **Rastreo:** elegibilidad, selección de productos, confirmación antes de
   encolar, cancelación, corridas Scrapy, heartbeat y último ciclo del worker.
 - **Configuración:** política versionada con ETag, idempotencia y motivo de

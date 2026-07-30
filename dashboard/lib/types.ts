@@ -442,6 +442,136 @@ export interface TelegramTestRead {
   detail: string | null;
 }
 
+export type SubscriberStatus =
+  | "trial"
+  | "active"
+  | "expired"
+  | "suspended";
+
+export type TelegramMembershipStatus = "pending" | "in_group" | "removed";
+
+export type PaymentMethod =
+  | "yape"
+  | "plin"
+  | "bank_transfer"
+  | "cash"
+  | "other";
+
+export interface SubscriberCreate {
+  full_name: string;
+  telegram_username: string;
+  email?: string | null;
+  phone?: string | null;
+  status?: "trial" | "active";
+  telegram_membership_status?: TelegramMembershipStatus;
+  duration_days?: number;
+  notes?: string | null;
+}
+
+export interface SubscriberPatch {
+  full_name?: string;
+  telegram_username?: string;
+  email?: string | null;
+  phone?: string | null;
+  status?: "trial" | "active" | "suspended";
+  telegram_membership_status?: TelegramMembershipStatus;
+  expires_at?: ISODateTime;
+  notes?: string | null;
+}
+
+export interface SubscriberRead {
+  id: UUID;
+  full_name: string;
+  telegram_username: string;
+  email: string | null;
+  phone: string | null;
+  status: SubscriberStatus;
+  stored_status: SubscriberStatus;
+  telegram_membership_status: TelegramMembershipStatus;
+  starts_at: ISODateTime;
+  expires_at: ISODateTime;
+  days_remaining: number;
+  notes: string | null;
+  version: number;
+  created_by: string;
+  created_at: ISODateTime;
+  updated_at: ISODateTime;
+}
+
+export interface SubscriberListParams extends PageParams {
+  status?: SubscriberStatus;
+  membership_status?: TelegramMembershipStatus;
+  search?: string;
+}
+
+export interface PaymentCreate {
+  amount: DecimalValue;
+  method: PaymentMethod;
+  reference?: string | null;
+  paid_at?: ISODateTime | null;
+  renewal_days?: number;
+  notes?: string | null;
+}
+
+export interface PaymentRead {
+  id: UUID;
+  subscriber_id: UUID;
+  amount: DecimalValue;
+  currency: "PEN";
+  method: PaymentMethod;
+  reference: string | null;
+  paid_at: ISODateTime;
+  coverage_starts_at: ISODateTime;
+  coverage_ends_at: ISODateTime;
+  renewal_days: number;
+  notes: string | null;
+  recorded_by: string;
+  created_at: ISODateTime;
+}
+
+export interface PaymentRecordRead {
+  payment: PaymentRead;
+  subscriber: SubscriberRead;
+}
+
+export interface CommercialSummaryRead {
+  total_subscribers: number;
+  trial_subscribers: number;
+  active_subscribers: number;
+  expired_subscribers: number;
+  suspended_subscribers: number;
+  pending_group_access: number;
+  members_in_group: number;
+  expiring_within_7_days: number;
+  confirmed_revenue_total_pen: DecimalValue;
+  confirmed_revenue_month_pen: DecimalValue;
+  telegram_ready: boolean;
+  alerts_sent_7_days: number;
+  alerts_sent_30_days: number;
+  last_alert_sent_at: ISODateTime | null;
+  checklist_completed: number;
+  checklist_required: number;
+  launch_ready: boolean;
+  checked_at: ISODateTime;
+}
+
+export interface LaunchChecklistItemRead {
+  item_key: string;
+  position: number;
+  title: string;
+  description: string;
+  category: string;
+  required: boolean;
+  completed: boolean;
+  completed_at: ISODateTime | null;
+  completed_by: string | null;
+  updated_at: ISODateTime;
+}
+
+export interface LaunchChecklistUpdate {
+  completed: boolean;
+}
+
 export interface DiscoveryCandidateListParams extends PageParams {
   status?: DiscoveryCandidateStatus;
   store_slug?: string;

@@ -30,6 +30,7 @@ from bot_ofertas.api.dependencies import (
     require_admin,
 )
 from bot_ofertas.api.schemas import (
+    CommercialSummaryRead,
     ConfirmationRead,
     CrawlJobCreate,
     CrawlJobRead,
@@ -40,10 +41,15 @@ from bot_ofertas.api.schemas import (
     DiscoveryRunRead,
     DiscoverySourceRead,
     HealthRead,
+    LaunchChecklistItemRead,
+    LaunchChecklistUpdate,
     ObservationRead,
     OfferRead,
     OperationsStatusRead,
     Page,
+    PaymentCreate,
+    PaymentRead,
+    PaymentRecordRead,
     ProductActivation,
     ProductCreate,
     ProductPatch,
@@ -52,6 +58,9 @@ from bot_ofertas.api.schemas import (
     RuntimePolicyPatch,
     RuntimePolicyRead,
     StoreRead,
+    SubscriberCreate,
+    SubscriberPatch,
+    SubscriberRead,
     TelegramDistributionStatusRead,
     TelegramTestRead,
 )
@@ -59,7 +68,9 @@ from bot_ofertas.api.service import (
     archive_product,
     bulk_review_discovery_candidates,
     cancel_crawl_job,
+    commercial_summary,
     create_product,
+    create_subscriber,
     enqueue_crawl_job,
     get_crawl_job,
     get_product,
@@ -69,20 +80,27 @@ from bot_ofertas.api.service import (
     list_discovery_candidates,
     list_discovery_runs,
     list_discovery_sources,
+    list_launch_checklist,
     list_observations,
     list_offers,
     list_products,
     list_stores,
+    list_subscriber_payments,
+    list_subscribers,
     operations_status,
+    record_subscriber_payment,
     request_discovery_run,
     review_discovery_candidate,
     runtime_policy,
     send_telegram_beta_test,
     set_product_activation,
     set_product_variant,
+    subscriber,
     telegram_distribution_status,
+    update_launch_checklist_item,
     update_product,
     update_runtime_policy,
+    update_subscriber,
 )
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -137,6 +155,16 @@ def _expected_product_version(if_match: str | None) -> int:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="If-Match debe contener una versión de producto positiva.",
+        )
+    return version
+
+
+def _expected_subscriber_version(if_match: str | None) -> int:
+    version = _expected_revision(if_match)
+    if version is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="If-Match debe contener una versión de suscriptor positiva.",
         )
     return version
 
@@ -687,6 +715,189 @@ def test_telegram_distribution(
     _admin: AdminDependency,
 ) -> TelegramTestRead:
     return send_telegram_beta_test(session)
+
+
+@api_router.get(
+    "/commercial/summary",
+    response_model=CommercialSummaryRead,
+    tags=["commercial-beta"],
+)
+def beta_commercial_summary(
+    session: SessionDependency,
+) -> CommercialSummaryRead:
+    return commercial_summary(session)
+
+
+@api_router.get(
+    "/commercial/checklist",
+    response_model=list[LaunchChecklistItemRead],
+    tags=["commercial-beta"],
+)
+def beta_launch_checklist(
+    session: SessionDependency,
+) -> list[LaunchChecklistItemRead]:
+    return list_launch_checklist(session)
+
+
+@api_router.put(
+    "/commercial/checklist/{item_key}",
+    response_model=LaunchChecklistItemRead,
+    tags=["commercial-beta"],
+)
+def set_beta_launch_checklist_item(
+    item_key: str,
+    payload: LaunchChecklistUpdate,
+    session: SessionDependency,
+    admin: AdminDependency,
+) -> LaunchChecklistItemRead:
+    return update_launch_checklist_item(
+        session,
+        item_key=item_key,
+        payload=payload,
+        changed_by=admin.subject,
+    )
+
+
+@api_router.get(
+    "/subscribers",
+    response_model=Page[SubscriberRead],
+    tags=["subscribers"],
+)
+def subscribers(
+    session: SessionDependency,
+    cursor: Cursor = None,
+    limit: Limit = _DEFAULT_LIMIT,
+    subscriber_status: Annotated[
+        Literal["trial", "active", "expired", "suspended"] | None,
+        Query(alias="status"),
+    ] = None,
+    membership_status: Annotated[
+        Literal["pending", "in_group", "removed"] | None,
+        Query(),
+    ] = None,
+    search: Annotated[str | None, Query(max_length=100)] = None,
+) -> Page[SubscriberRead]:
+    return list_subscribers(
+        session,
+        cursor=cursor,
+        limit=limit,
+        status=subscriber_status,
+        membership_status=membership_status,
+        search=search,
+    )
+
+
+@api_router.post(
+    "/subscribers",
+    response_model=SubscriberRead,
+    status_code=status.HTTP_201_CREATED,
+    tags=["subscribers"],
+)
+def add_subscriber(
+    payload: SubscriberCreate,
+    session: SessionDependency,
+    admin: AdminDependency,
+    response: Response,
+) -> SubscriberRead:
+    created = create_subscriber(
+        session,
+        payload=payload,
+        created_by=admin.subject,
+    )
+    response.headers["Location"] = f"/api/v1/subscribers/{created.id}"
+    response.headers["ETag"] = _revision_etag(created.version)
+    return created
+
+
+@api_router.get(
+    "/subscribers/{subscriber_id}",
+    response_model=SubscriberRead,
+    tags=["subscribers"],
+)
+def get_beta_subscriber(
+    subscriber_id: UUID,
+    session: SessionDependency,
+    response: Response,
+) -> SubscriberRead:
+    result = subscriber(session, subscriber_id=subscriber_id)
+    response.headers["ETag"] = _revision_etag(result.version)
+    return result
+
+
+@api_router.patch(
+    "/subscribers/{subscriber_id}",
+    response_model=SubscriberRead,
+    tags=["subscribers"],
+)
+def patch_beta_subscriber(
+    subscriber_id: UUID,
+    payload: SubscriberPatch,
+    session: SessionDependency,
+    response: Response,
+    _admin: AdminDependency,
+    if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+) -> SubscriberRead:
+    result = update_subscriber(
+        session,
+        subscriber_id=subscriber_id,
+        payload=payload,
+        expected_version=_expected_subscriber_version(if_match),
+    )
+    response.headers["ETag"] = _revision_etag(result.version)
+    return result
+
+
+@api_router.get(
+    "/subscribers/{subscriber_id}/payments",
+    response_model=list[PaymentRead],
+    tags=["subscribers"],
+)
+def subscriber_payments(
+    subscriber_id: UUID,
+    session: SessionDependency,
+    limit: Limit = _DEFAULT_LIMIT,
+) -> list[PaymentRead]:
+    return list_subscriber_payments(
+        session,
+        subscriber_id=subscriber_id,
+        limit=limit,
+    )
+
+
+@api_router.post(
+    "/subscribers/{subscriber_id}/payments",
+    response_model=PaymentRecordRead,
+    status_code=status.HTTP_201_CREATED,
+    tags=["subscribers"],
+)
+def add_subscriber_payment(
+    subscriber_id: UUID,
+    payload: PaymentCreate,
+    session: SessionDependency,
+    admin: AdminDependency,
+    response: Response,
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=8, max_length=512),
+    ],
+) -> PaymentRecordRead:
+    payment, renewed_subscriber, inserted = record_subscriber_payment(
+        session,
+        subscriber_id=subscriber_id,
+        payload=payload,
+        recorded_by=admin.subject,
+        idempotency_key=idempotency_key,
+    )
+    response.headers["Location"] = (
+        f"/api/v1/subscribers/{subscriber_id}/payments"
+    )
+    response.headers["ETag"] = _revision_etag(renewed_subscriber.version)
+    if not inserted:
+        response.headers["X-Idempotent-Replay"] = "true"
+    return PaymentRecordRead(
+        payment=payment,
+        subscriber=renewed_subscriber,
+    )
 
 
 @api_router.post(

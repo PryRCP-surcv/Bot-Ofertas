@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from decimal import Decimal
 from typing import Literal
@@ -448,6 +449,242 @@ class TelegramTestRead(ApiModel):
     sent: bool
     message_id: str | None
     detail: str | None
+
+
+def _normalize_required_text(value: str, *, field_name: str) -> str:
+    normalized = " ".join(value.split())
+    if not normalized:
+        raise ValueError(f"{field_name} no puede estar vacío")
+    return normalized
+
+
+def _normalize_optional_contact(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = " ".join(value.split())
+    return normalized or None
+
+
+def _normalize_telegram_username(value: str) -> str:
+    normalized = value.strip().removeprefix("@").lower()
+    if not re.fullmatch(r"[a-z][a-z0-9_]{4,31}", normalized):
+        raise ValueError(
+            "telegram_username debe tener entre 5 y 32 caracteres y usar "
+            "solo letras, números o guion bajo"
+        )
+    return normalized
+
+
+class SubscriberCreate(ApiModel):
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: str = Field(min_length=1, max_length=200)
+    telegram_username: str = Field(min_length=5, max_length=33)
+    email: str | None = Field(default=None, max_length=320)
+    phone: str | None = Field(default=None, max_length=40)
+    status: Literal["trial", "active"] = "trial"
+    telegram_membership_status: Literal["pending", "in_group", "removed"] = (
+        "pending"
+    )
+    duration_days: int = Field(default=7, ge=1, le=366)
+    notes: str | None = Field(default=None, max_length=2_000)
+
+    @field_validator("full_name")
+    @classmethod
+    def normalize_full_name(cls, value: str) -> str:
+        return _normalize_required_text(value, field_name="full_name")
+
+    @field_validator("telegram_username")
+    @classmethod
+    def normalize_username(cls, value: str) -> str:
+        return _normalize_telegram_username(value)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str | None) -> str | None:
+        normalized = _normalize_optional_contact(value)
+        if normalized is None:
+            return None
+        lowered = normalized.lower()
+        if (
+            "@" not in lowered
+            or lowered.startswith("@")
+            or lowered.endswith("@")
+            or "." not in lowered.rsplit("@", 1)[-1]
+        ):
+            raise ValueError("email no tiene un formato válido")
+        return lowered
+
+    @field_validator("phone", "notes")
+    @classmethod
+    def normalize_optional_fields(cls, value: str | None) -> str | None:
+        return _normalize_optional_contact(value)
+
+
+class SubscriberPatch(ApiModel):
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: str | None = Field(default=None, min_length=1, max_length=200)
+    telegram_username: str | None = Field(default=None, min_length=5, max_length=33)
+    email: str | None = Field(default=None, max_length=320)
+    phone: str | None = Field(default=None, max_length=40)
+    status: Literal["trial", "active", "suspended"] | None = None
+    telegram_membership_status: (
+        Literal["pending", "in_group", "removed"] | None
+    ) = None
+    expires_at: datetime | None = None
+    notes: str | None = Field(default=None, max_length=2_000)
+
+    @model_validator(mode="after")
+    def require_change(self) -> SubscriberPatch:
+        if not self.model_fields_set:
+            raise ValueError("se requiere al menos un campo para actualizar")
+        return self
+
+    @field_validator("full_name")
+    @classmethod
+    def normalize_full_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _normalize_required_text(value, field_name="full_name")
+
+    @field_validator("telegram_username")
+    @classmethod
+    def normalize_username(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _normalize_telegram_username(value)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str | None) -> str | None:
+        normalized = _normalize_optional_contact(value)
+        if normalized is None:
+            return None
+        lowered = normalized.lower()
+        if (
+            "@" not in lowered
+            or lowered.startswith("@")
+            or lowered.endswith("@")
+            or "." not in lowered.rsplit("@", 1)[-1]
+        ):
+            raise ValueError("email no tiene un formato válido")
+        return lowered
+
+    @field_validator("phone", "notes")
+    @classmethod
+    def normalize_optional_fields(cls, value: str | None) -> str | None:
+        return _normalize_optional_contact(value)
+
+    @field_validator("expires_at")
+    @classmethod
+    def require_aware_expiry(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("expires_at debe incluir zona horaria")
+        return value
+
+
+class SubscriberRead(ApiModel):
+    id: UUID
+    full_name: str
+    telegram_username: str
+    email: str | None
+    phone: str | None
+    status: Literal["trial", "active", "expired", "suspended"]
+    stored_status: Literal["trial", "active", "expired", "suspended"]
+    telegram_membership_status: Literal["pending", "in_group", "removed"]
+    starts_at: datetime
+    expires_at: datetime
+    days_remaining: int = Field(ge=0)
+    notes: str | None
+    version: int = Field(ge=1)
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class PaymentCreate(ApiModel):
+    model_config = ConfigDict(extra="forbid")
+
+    amount: Decimal = Field(gt=0, le=100_000, decimal_places=2)
+    method: Literal["yape", "plin", "bank_transfer", "cash", "other"]
+    reference: str | None = Field(default=None, max_length=200)
+    paid_at: datetime | None = None
+    renewal_days: int = Field(default=30, ge=1, le=366)
+    notes: str | None = Field(default=None, max_length=2_000)
+
+    @field_validator("reference", "notes")
+    @classmethod
+    def normalize_optional_fields(cls, value: str | None) -> str | None:
+        return _normalize_optional_contact(value)
+
+    @field_validator("paid_at")
+    @classmethod
+    def require_aware_paid_at(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("paid_at debe incluir zona horaria")
+        return value
+
+
+class PaymentRead(ApiModel):
+    id: UUID
+    subscriber_id: UUID
+    amount: Decimal
+    currency: Literal["PEN"]
+    method: Literal["yape", "plin", "bank_transfer", "cash", "other"]
+    reference: str | None
+    paid_at: datetime
+    coverage_starts_at: datetime
+    coverage_ends_at: datetime
+    renewal_days: int = Field(ge=1, le=366)
+    notes: str | None
+    recorded_by: str
+    created_at: datetime
+
+
+class PaymentRecordRead(ApiModel):
+    payment: PaymentRead
+    subscriber: SubscriberRead
+
+
+class CommercialSummaryRead(ApiModel):
+    total_subscribers: int = Field(ge=0)
+    trial_subscribers: int = Field(ge=0)
+    active_subscribers: int = Field(ge=0)
+    expired_subscribers: int = Field(ge=0)
+    suspended_subscribers: int = Field(ge=0)
+    pending_group_access: int = Field(ge=0)
+    members_in_group: int = Field(ge=0)
+    expiring_within_7_days: int = Field(ge=0)
+    confirmed_revenue_total_pen: Decimal = Field(ge=0)
+    confirmed_revenue_month_pen: Decimal = Field(ge=0)
+    telegram_ready: bool
+    alerts_sent_7_days: int = Field(ge=0)
+    alerts_sent_30_days: int = Field(ge=0)
+    last_alert_sent_at: datetime | None
+    checklist_completed: int = Field(ge=0)
+    checklist_required: int = Field(ge=0)
+    launch_ready: bool
+    checked_at: datetime
+
+
+class LaunchChecklistItemRead(ApiModel):
+    item_key: str
+    position: int = Field(ge=1)
+    title: str
+    description: str
+    category: str
+    required: bool
+    completed: bool
+    completed_at: datetime | None
+    completed_by: str | None
+    updated_at: datetime
+
+
+class LaunchChecklistUpdate(ApiModel):
+    model_config = ConfigDict(extra="forbid")
+
+    completed: bool
 
 
 class RuntimePolicyRead(ApiModel):

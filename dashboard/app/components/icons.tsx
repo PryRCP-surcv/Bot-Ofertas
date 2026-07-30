@@ -161,3 +161,13 @@ export function PaperPlaneIcon(props: IconProps) {
     </IconBase>
   );
 }
+
+export function UsersIcon(props: IconProps) {
+  return (
+    <IconBase {...props}>
+      <circle cx="9" cy="8" r="3" {...strokeProps} />
+      <path d="M3.5 20v-2.2A4.8 4.8 0 0 1 8.3 13h1.4a4.8 4.8 0 0 1 4.8 4.8V20" {...strokeProps} />
+      <path d="M15 5.4a3 3 0 0 1 0 5.2M16.5 13.2a4.8 4.8 0 0 1 4 4.7V20" {...strokeProps} />
+    </IconBase>
+  );
+}

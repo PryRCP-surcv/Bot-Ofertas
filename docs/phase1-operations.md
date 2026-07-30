@@ -230,11 +230,18 @@ producto externo, SKU, vendedor, variante, condición y moneda.
 
 La identidad de deduplicación incluye canal, producto, tienda, SKU, vendedor,
 variante, condición, moneda, las familias comerciales y una huella opaca de sus
-condiciones exactas. Durante 24 horas no se repite una alerta equivalente,
-salvo que:
+condiciones exactas. Una oferta continua se envía una sola vez y no vuelve a
+notificarse solo porque hayan pasado 24 horas. Durante el mismo episodio solo
+se reserva otra alerta si:
 
 - aumente la severidad; o
 - el precio baje otro 5 % como mínimo.
+
+El episodio se cierra cuando una observación válida deja de ser oferta, cambia
+la condición comercial activa o el producto vuelve a su precio normal. Si la
+oferta reaparece después, puede generar una nueva alerta una vez cumplida la
+espera configurada por `BOT_ALERT_COOLDOWN_HOURS`. Esa espera evita mensajes
+repetidos si una tienda alterna precios durante un periodo corto.
 
 Las entregas usan leases en PostgreSQL para que varios workers no reclamen el
 mismo mensaje. Un fallo temporal se reintenta con backoff exponencial hasta cinco

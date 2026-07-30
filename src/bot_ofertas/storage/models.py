@@ -84,6 +84,31 @@ class DiscoveryCandidateStatus(StrEnum):
     UNAVAILABLE = "unavailable"
 
 
+class SubscriberStatus(StrEnum):
+    """Commercial lifecycle used by the manually managed beta."""
+
+    TRIAL = "trial"
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    SUSPENDED = "suspended"
+
+
+class TelegramMembershipStatus(StrEnum):
+    """Manual access state for the single Telegram beta audience."""
+
+    PENDING = "pending"
+    IN_GROUP = "in_group"
+    REMOVED = "removed"
+
+
+class PaymentMethod(StrEnum):
+    YAPE = "yape"
+    PLIN = "plin"
+    BANK_TRANSFER = "bank_transfer"
+    CASH = "cash"
+    OTHER = "other"
+
+
 class WorkerLifecycleStatus(StrEnum):
     """Last lifecycle state explicitly reported by one local worker."""
 
@@ -1039,6 +1064,296 @@ class AdminConfigRevision(Base):
     )
 
 
+class BetaSubscriber(Base):
+    """One manually billed member of the private Telegram beta."""
+
+    __tablename__ = "beta_subscribers"
+    __table_args__ = (
+        CheckConstraint(
+            "btrim(full_name) <> ''",
+            name="ck_beta_subscribers_full_name_non_empty",
+        ),
+        CheckConstraint(
+            "telegram_username = lower(telegram_username) "
+            "AND telegram_username ~ '^[a-z][a-z0-9_]{4,31}$'",
+            name="ck_beta_subscribers_telegram_username",
+        ),
+        CheckConstraint(
+            "status IN ('trial', 'active', 'expired', 'suspended')",
+            name="ck_beta_subscribers_status",
+        ),
+        CheckConstraint(
+            "telegram_membership_status IN ('pending', 'in_group', 'removed')",
+            name="ck_beta_subscribers_membership_status",
+        ),
+        CheckConstraint(
+            "expires_at > starts_at",
+            name="ck_beta_subscribers_validity_order",
+        ),
+        CheckConstraint(
+            "version >= 1",
+            name="ck_beta_subscribers_version_positive",
+        ),
+        CheckConstraint(
+            "email IS NULL OR btrim(email) <> ''",
+            name="ck_beta_subscribers_email_non_empty",
+        ),
+        CheckConstraint(
+            "phone IS NULL OR btrim(phone) <> ''",
+            name="ck_beta_subscribers_phone_non_empty",
+        ),
+        CheckConstraint(
+            "notes IS NULL OR btrim(notes) <> ''",
+            name="ck_beta_subscribers_notes_non_empty",
+        ),
+        UniqueConstraint(
+            "telegram_username",
+            name="uq_beta_subscribers_telegram_username",
+        ),
+        Index(
+            "ix_beta_subscribers_status_expiry",
+            "status",
+            "expires_at",
+        ),
+        Index(
+            "ix_beta_subscribers_membership",
+            "telegram_membership_status",
+            "updated_at",
+        ),
+        Index("ix_beta_subscribers_created", "created_at", "id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+    full_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    telegram_username: Mapped[str] = mapped_column(String(32), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(320))
+    phone: Mapped[str | None] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=SubscriberStatus.TRIAL.value,
+        server_default=SubscriberStatus.TRIAL.value,
+    )
+    telegram_membership_status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=TelegramMembershipStatus.PENDING.value,
+        server_default=TelegramMembershipStatus.PENDING.value,
+    )
+    starts_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    notes: Mapped[str | None] = mapped_column(Text)
+    version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default=text("1"),
+    )
+    created_by: Mapped[str] = mapped_column(
+        String(200),
+        nullable=False,
+        default="local-admin",
+        server_default="local-admin",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.now(),
+    )
+
+    payments: Mapped[list[BetaPayment]] = relationship(
+        back_populates="subscriber",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class BetaPayment(Base):
+    """Immutable confirmation of one manual external beta payment."""
+
+    __tablename__ = "beta_payments"
+    __table_args__ = (
+        CheckConstraint(
+            "amount > 0",
+            name="ck_beta_payments_amount_positive",
+        ),
+        CheckConstraint(
+            "currency = 'PEN'",
+            name="ck_beta_payments_currency_pen",
+        ),
+        CheckConstraint(
+            "method IN ('yape', 'plin', 'bank_transfer', 'cash', 'other')",
+            name="ck_beta_payments_method",
+        ),
+        CheckConstraint(
+            "coverage_ends_at > coverage_starts_at",
+            name="ck_beta_payments_coverage_order",
+        ),
+        CheckConstraint(
+            "renewal_days BETWEEN 1 AND 366",
+            name="ck_beta_payments_renewal_days",
+        ),
+        CheckConstraint(
+            "reference IS NULL OR btrim(reference) <> ''",
+            name="ck_beta_payments_reference_non_empty",
+        ),
+        CheckConstraint(
+            "notes IS NULL OR btrim(notes) <> ''",
+            name="ck_beta_payments_notes_non_empty",
+        ),
+        CheckConstraint(
+            "idempotency_key_hash ~ '^[0-9a-f]{64}$' "
+            "AND request_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="ck_beta_payments_idempotency_hashes",
+        ),
+        UniqueConstraint(
+            "idempotency_key_hash",
+            name="uq_beta_payments_idempotency_hash",
+        ),
+        Index(
+            "ix_beta_payments_subscriber_paid",
+            "subscriber_id",
+            "paid_at",
+            "id",
+        ),
+        Index("ix_beta_payments_paid", "paid_at", "id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+    subscriber_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey(
+            "beta_subscribers.id",
+            name="fk_beta_payments_subscriber_id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(
+        String(3),
+        nullable=False,
+        default="PEN",
+        server_default="PEN",
+    )
+    method: Mapped[str] = mapped_column(String(32), nullable=False)
+    reference: Mapped[str | None] = mapped_column(String(200))
+    paid_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    coverage_starts_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    coverage_ends_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    renewal_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text)
+    recorded_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    idempotency_key_hash: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    request_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+
+    subscriber: Mapped[BetaSubscriber] = relationship(back_populates="payments")
+
+
+class BetaLaunchChecklistItem(Base):
+    """Persistent readiness item for the controlled commercial launch."""
+
+    __tablename__ = "beta_launch_checklist_items"
+    __table_args__ = (
+        CheckConstraint(
+            "btrim(item_key) <> '' AND btrim(title) <> '' "
+            "AND btrim(description) <> '' AND btrim(category) <> ''",
+            name="ck_beta_launch_checklist_text_non_empty",
+        ),
+        CheckConstraint(
+            "position >= 1",
+            name="ck_beta_launch_checklist_position_positive",
+        ),
+        CheckConstraint(
+            "(completed = false AND completed_at IS NULL AND completed_by IS NULL) "
+            "OR (completed = true AND completed_at IS NOT NULL "
+            "AND btrim(completed_by) <> '')",
+            name="ck_beta_launch_checklist_completion_shape",
+        ),
+        UniqueConstraint(
+            "position",
+            name="uq_beta_launch_checklist_position",
+        ),
+        Index(
+            "ix_beta_launch_checklist_category_position",
+            "category",
+            "position",
+        ),
+    )
+
+    item_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(String(600), nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    required: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+    completed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    completed_by: Mapped[str | None] = mapped_column(String(200))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.now(),
+    )
+
+
 class CrawlRun(Base):
     """One bounded execution of one store spider."""
 
@@ -1817,6 +2132,10 @@ class OfferAlertState(Base):
             "channel <> ''",
             name="ck_offer_alert_states_channel_non_empty",
         ),
+        CheckConstraint(
+            "NOT episode_active OR last_seen_at IS NOT NULL",
+            name="ck_offer_alert_states_active_seen",
+        ),
         Index(
             "ix_offer_alert_states_tracked_product",
             "tracked_product_id",
@@ -1836,6 +2155,16 @@ class OfferAlertState(Base):
     last_classification: Mapped[str | None] = mapped_column(String(40))
     last_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     last_reserved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    episode_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_inactive_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

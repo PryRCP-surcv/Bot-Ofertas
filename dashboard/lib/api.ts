@@ -1,6 +1,7 @@
 import type {
   ApiResponse,
   ApiResponseMeta,
+  CommercialSummaryRead,
   ConfirmationListParams,
   ConfirmationRead,
   CrawlJobCreate,
@@ -15,12 +16,17 @@ import type {
   DiscoveryRunRead,
   DiscoverySourceRead,
   HealthRead,
+  LaunchChecklistItemRead,
+  LaunchChecklistUpdate,
   ObservationRead,
   OperationsStatusRead,
   OfferListParams,
   OfferRead,
   Page,
   PageParams,
+  PaymentCreate,
+  PaymentRead,
+  PaymentRecordRead,
   ProblemDetails,
   ProductActivation,
   ProductCreate,
@@ -31,6 +37,10 @@ import type {
   RuntimePolicyPatch,
   RuntimePolicyRead,
   StoreRead,
+  SubscriberCreate,
+  SubscriberListParams,
+  SubscriberPatch,
+  SubscriberRead,
   TelegramDistributionStatusRead,
   TelegramTestRead,
   UUID,
@@ -69,6 +79,16 @@ export interface UpdateSettingsOptions {
   etag: string;
   idempotencyKey?: string;
   changeReason?: string;
+  signal?: AbortSignal;
+}
+
+export interface SubscriberWriteOptions {
+  etag: string;
+  signal?: AbortSignal;
+}
+
+export interface RecordPaymentOptions {
+  idempotencyKey: string;
   signal?: AbortSignal;
 }
 
@@ -542,6 +562,97 @@ export class ApiClient {
     return this.request<TelegramTestRead>(
       "/api/v1/distribution/telegram/test",
       { method: "POST", signal },
+    );
+  }
+
+  async getCommercialSummary(
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<CommercialSummaryRead>> {
+    return this.request<CommercialSummaryRead>("/api/v1/commercial/summary", {
+      signal,
+    });
+  }
+
+  async getLaunchChecklist(
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<LaunchChecklistItemRead[]>> {
+    return this.request<LaunchChecklistItemRead[]>(
+      "/api/v1/commercial/checklist",
+      { signal },
+    );
+  }
+
+  async updateLaunchChecklistItem(
+    itemKey: string,
+    payload: LaunchChecklistUpdate,
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<LaunchChecklistItemRead>> {
+    return this.request<LaunchChecklistItemRead>(
+      `/api/v1/commercial/checklist/${encodeURIComponent(itemKey)}`,
+      { method: "PUT", body: payload, signal },
+    );
+  }
+
+  async listSubscribers(
+    params: SubscriberListParams = {},
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<Page<SubscriberRead>>> {
+    return this.request<Page<SubscriberRead>>(
+      appendQuery("/api/v1/subscribers", params),
+      { signal },
+    );
+  }
+
+  async createSubscriber(
+    payload: SubscriberCreate,
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<SubscriberRead>> {
+    return this.request<SubscriberRead>("/api/v1/subscribers", {
+      method: "POST",
+      body: payload,
+      signal,
+    });
+  }
+
+  async updateSubscriber(
+    subscriberId: UUID,
+    payload: SubscriberPatch,
+    options: SubscriberWriteOptions,
+  ): Promise<ApiResponse<SubscriberRead>> {
+    return this.request<SubscriberRead>(
+      `/api/v1/subscribers/${encodeURIComponent(subscriberId)}`,
+      {
+        method: "PATCH",
+        body: payload,
+        headers: { "If-Match": options.etag },
+        signal: options.signal,
+      },
+    );
+  }
+
+  async listSubscriberPayments(
+    subscriberId: UUID,
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<PaymentRead[]>> {
+    return this.request<PaymentRead[]>(
+      `/api/v1/subscribers/${encodeURIComponent(subscriberId)}/payments`,
+      { signal },
+    );
+  }
+
+  async recordSubscriberPayment(
+    subscriberId: UUID,
+    payload: PaymentCreate,
+    options: RecordPaymentOptions,
+  ): Promise<ApiResponse<PaymentRecordRead>> {
+    return this.request<PaymentRecordRead>(
+      `/api/v1/subscribers/${encodeURIComponent(subscriberId)}/payments`,
+      {
+        method: "POST",
+        body: payload,
+        headers: { "Idempotency-Key": options.idempotencyKey },
+        signal: options.signal,
+      },
     );
   }
 

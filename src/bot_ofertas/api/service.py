@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import hashlib
+import json
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from math import ceil
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, exists, func, or_, select, text
+from sqlalchemy import and_, case, exists, func, or_, select, text
 from sqlalchemy.orm import Session, aliased, selectinload
 
 from bot_ofertas.api.cursors import (
@@ -16,6 +20,7 @@ from bot_ofertas.api.cursors import (
     encode_cursor,
 )
 from bot_ofertas.api.schemas import (
+    CommercialSummaryRead,
     ConfirmationRead,
     CrawlJobCreate,
     CrawlJobRead,
@@ -25,10 +30,14 @@ from bot_ofertas.api.schemas import (
     DiscoveryReview,
     DiscoveryRunRead,
     DiscoverySourceRead,
+    LaunchChecklistItemRead,
+    LaunchChecklistUpdate,
     ObservationRead,
     OfferRead,
     OperationsStatusRead,
     Page,
+    PaymentCreate,
+    PaymentRead,
     ProductActivation,
     ProductCreate,
     ProductPatch,
@@ -37,6 +46,9 @@ from bot_ofertas.api.schemas import (
     RuntimePolicyPatch,
     RuntimePolicyRead,
     StoreRead,
+    SubscriberCreate,
+    SubscriberPatch,
+    SubscriberRead,
     TelegramDistributionStatusRead,
     TelegramTestRead,
 )
@@ -51,10 +63,14 @@ from bot_ofertas.services.runtime_policy import (
 )
 from bot_ofertas.storage.admin import (
     CrawlJobRepository,
+    IdempotencyConflictError,
     OptimisticConcurrencyError,
 )
 from bot_ofertas.storage.discovery import DiscoveryRepository
 from bot_ofertas.storage.models import (
+    BetaLaunchChecklistItem,
+    BetaPayment,
+    BetaSubscriber,
     CrawlJob,
     CrawlJobStatus,
     CrawlRun,
@@ -95,6 +111,18 @@ class InvalidRuntimePolicyError(ValueError):
 
 
 class InvalidDiscoveryRequestError(ValueError):
+    pass
+
+
+class SubscriberNotFoundError(LookupError):
+    pass
+
+
+class LaunchChecklistItemNotFoundError(LookupError):
+    pass
+
+
+class InvalidCommercialRequestError(ValueError):
     pass
 
 
@@ -188,6 +216,519 @@ def send_telegram_beta_test(
         message_id=result.message_id,
         detail=result.detail,
     )
+
+
+def _effective_subscriber_status(
+    subscriber: BetaSubscriber,
+    *,
+    now: datetime,
+) -> str:
+    if subscriber.status == "suspended":
+        return "suspended"
+    if subscriber.expires_at <= now:
+        return "expired"
+    return subscriber.status
+
+
+def _subscriber_read(
+    subscriber: BetaSubscriber,
+    *,
+    now: datetime | None = None,
+) -> SubscriberRead:
+    checked_at = now or datetime.now(UTC)
+    remaining_seconds = max(
+        0,
+        (subscriber.expires_at - checked_at).total_seconds(),
+    )
+    return SubscriberRead(
+        id=subscriber.id,
+        full_name=subscriber.full_name,
+        telegram_username=subscriber.telegram_username,
+        email=subscriber.email,
+        phone=subscriber.phone,
+        status=_effective_subscriber_status(subscriber, now=checked_at),
+        stored_status=subscriber.status,
+        telegram_membership_status=subscriber.telegram_membership_status,
+        starts_at=subscriber.starts_at,
+        expires_at=subscriber.expires_at,
+        days_remaining=ceil(remaining_seconds / 86_400),
+        notes=subscriber.notes,
+        version=subscriber.version,
+        created_by=subscriber.created_by,
+        created_at=subscriber.created_at,
+        updated_at=subscriber.updated_at,
+    )
+
+
+def _subscriber_status_expression(now: datetime):
+    return case(
+        (BetaSubscriber.status == "suspended", "suspended"),
+        (BetaSubscriber.expires_at <= now, "expired"),
+        else_=BetaSubscriber.status,
+    )
+
+
+def commercial_summary(session: Session) -> CommercialSummaryRead:
+    """Return actionable beta membership, revenue and launch readiness."""
+
+    now = datetime.now(UTC)
+    effective_status = _subscriber_status_expression(now)
+    status_counts = {
+        key: int(value)
+        for key, value in session.execute(
+            select(effective_status, func.count(BetaSubscriber.id)).group_by(
+                effective_status
+            )
+        )
+    }
+    active_statuses = ("trial", "active")
+    pending_group_access = int(
+        session.scalar(
+            select(func.count(BetaSubscriber.id)).where(
+                effective_status.in_(active_statuses),
+                BetaSubscriber.telegram_membership_status == "pending",
+            )
+        )
+        or 0
+    )
+    members_in_group = int(
+        session.scalar(
+            select(func.count(BetaSubscriber.id)).where(
+                effective_status.in_(active_statuses),
+                BetaSubscriber.telegram_membership_status == "in_group",
+            )
+        )
+        or 0
+    )
+    expiring_within_7_days = int(
+        session.scalar(
+            select(func.count(BetaSubscriber.id)).where(
+                effective_status.in_(active_statuses),
+                BetaSubscriber.expires_at > now,
+                BetaSubscriber.expires_at <= now + timedelta(days=7),
+            )
+        )
+        or 0
+    )
+
+    lima_now = now.astimezone(ZoneInfo("America/Lima"))
+    month_start_lima = lima_now.replace(
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    month_start = month_start_lima.astimezone(UTC)
+    revenue_total = session.scalar(select(func.sum(BetaPayment.amount)))
+    revenue_month = session.scalar(
+        select(func.sum(BetaPayment.amount)).where(
+            BetaPayment.paid_at >= month_start
+        )
+    )
+
+    sent_base = (
+        NotificationDelivery.channel == "telegram",
+        NotificationDelivery.status == "sent",
+        NotificationDelivery.sent_at.is_not(None),
+    )
+    alerts_sent_7_days = int(
+        session.scalar(
+            select(func.count(NotificationDelivery.id)).where(
+                *sent_base,
+                NotificationDelivery.sent_at >= now - timedelta(days=7),
+            )
+        )
+        or 0
+    )
+    alerts_sent_30_days = int(
+        session.scalar(
+            select(func.count(NotificationDelivery.id)).where(
+                *sent_base,
+                NotificationDelivery.sent_at >= now - timedelta(days=30),
+            )
+        )
+        or 0
+    )
+    last_alert_sent_at = session.scalar(
+        select(func.max(NotificationDelivery.sent_at)).where(*sent_base)
+    )
+
+    checklist_required = int(
+        session.scalar(
+            select(func.count(BetaLaunchChecklistItem.item_key)).where(
+                BetaLaunchChecklistItem.required.is_(True)
+            )
+        )
+        or 0
+    )
+    checklist_completed = int(
+        session.scalar(
+            select(func.count(BetaLaunchChecklistItem.item_key)).where(
+                BetaLaunchChecklistItem.required.is_(True),
+                BetaLaunchChecklistItem.completed.is_(True),
+            )
+        )
+        or 0
+    )
+    runtime_settings = resolve_runtime_policy(session).settings
+    telegram_ready = bool(
+        runtime_settings.telegram_enabled
+        and runtime_settings.telegram_token
+        and runtime_settings.telegram_chat_id
+    )
+    return CommercialSummaryRead(
+        total_subscribers=sum(status_counts.values()),
+        trial_subscribers=status_counts.get("trial", 0),
+        active_subscribers=status_counts.get("active", 0),
+        expired_subscribers=status_counts.get("expired", 0),
+        suspended_subscribers=status_counts.get("suspended", 0),
+        pending_group_access=pending_group_access,
+        members_in_group=members_in_group,
+        expiring_within_7_days=expiring_within_7_days,
+        confirmed_revenue_total_pen=revenue_total or Decimal("0"),
+        confirmed_revenue_month_pen=revenue_month or Decimal("0"),
+        telegram_ready=telegram_ready,
+        alerts_sent_7_days=alerts_sent_7_days,
+        alerts_sent_30_days=alerts_sent_30_days,
+        last_alert_sent_at=last_alert_sent_at,
+        checklist_completed=checklist_completed,
+        checklist_required=checklist_required,
+        launch_ready=(
+            telegram_ready
+            and checklist_required > 0
+            and checklist_completed == checklist_required
+        ),
+        checked_at=now,
+    )
+
+
+def create_subscriber(
+    session: Session,
+    *,
+    payload: SubscriberCreate,
+    created_by: str,
+) -> SubscriberRead:
+    now = datetime.now(UTC)
+    subscriber = BetaSubscriber(
+        full_name=payload.full_name,
+        telegram_username=payload.telegram_username,
+        email=payload.email,
+        phone=payload.phone,
+        status=payload.status,
+        telegram_membership_status=payload.telegram_membership_status,
+        starts_at=now,
+        expires_at=now + timedelta(days=payload.duration_days),
+        notes=payload.notes,
+        created_by=created_by,
+    )
+    session.add(subscriber)
+    session.flush()
+    return _subscriber_read(subscriber, now=now)
+
+
+def get_subscriber(
+    session: Session,
+    *,
+    subscriber_id: UUID,
+    for_update: bool = False,
+) -> BetaSubscriber:
+    statement = select(BetaSubscriber).where(BetaSubscriber.id == subscriber_id)
+    if for_update:
+        statement = statement.with_for_update()
+    subscriber = session.scalar(statement)
+    if subscriber is None:
+        raise SubscriberNotFoundError("suscriptor no encontrado")
+    return subscriber
+
+
+def subscriber(
+    session: Session,
+    *,
+    subscriber_id: UUID,
+) -> SubscriberRead:
+    return _subscriber_read(
+        get_subscriber(session, subscriber_id=subscriber_id)
+    )
+
+
+def list_subscribers(
+    session: Session,
+    *,
+    cursor: str | None,
+    limit: int,
+    status: str | None,
+    membership_status: str | None,
+    search: str | None,
+) -> Page[SubscriberRead]:
+    page_size = _page_size(limit)
+    normalized_status = status.strip().lower() if status else None
+    normalized_membership = (
+        membership_status.strip().lower() if membership_status else None
+    )
+    normalized_search = _search_term(search)
+    scope = cursor_scope(
+        "beta-subscribers",
+        status=normalized_status,
+        membership_status=normalized_membership,
+        search=normalized_search,
+    )
+    now = datetime.now(UTC)
+    effective_status = _subscriber_status_expression(now)
+    filters = []
+    if normalized_status:
+        filters.append(effective_status == normalized_status)
+    if normalized_membership:
+        filters.append(
+            BetaSubscriber.telegram_membership_status
+            == normalized_membership
+        )
+    if normalized_search:
+        term = f"%{_escaped_like(normalized_search)}%"
+        filters.append(
+            or_(
+                BetaSubscriber.full_name.ilike(term, escape="\\"),
+                BetaSubscriber.telegram_username.ilike(term, escape="\\"),
+                BetaSubscriber.email.ilike(term, escape="\\"),
+                BetaSubscriber.phone.ilike(term, escape="\\"),
+            )
+        )
+    if cursor is not None:
+        position = decode_cursor(cursor, scope=scope)
+        subscriber_id = _cursor_uuid(position.key)
+        filters.append(
+            or_(
+                BetaSubscriber.created_at < position.timestamp,
+                and_(
+                    BetaSubscriber.created_at == position.timestamp,
+                    BetaSubscriber.id < subscriber_id,
+                ),
+            )
+        )
+    rows = list(
+        session.scalars(
+            select(BetaSubscriber)
+            .where(*filters)
+            .order_by(
+                BetaSubscriber.created_at.desc(),
+                BetaSubscriber.id.desc(),
+            )
+            .limit(page_size + 1)
+        )
+    )
+    has_more = len(rows) > page_size
+    visible = rows[:page_size]
+    return Page(
+        items=[_subscriber_read(item, now=now) for item in visible],
+        limit=page_size,
+        has_more=has_more,
+        next_cursor=(
+            encode_cursor(
+                scope=scope,
+                timestamp=visible[-1].created_at,
+                key=str(visible[-1].id),
+            )
+            if has_more
+            else None
+        ),
+    )
+
+
+def update_subscriber(
+    session: Session,
+    *,
+    subscriber_id: UUID,
+    payload: SubscriberPatch,
+    expected_version: int,
+) -> SubscriberRead:
+    subscriber_row = get_subscriber(
+        session,
+        subscriber_id=subscriber_id,
+        for_update=True,
+    )
+    if subscriber_row.version != expected_version:
+        raise OptimisticConcurrencyError(
+            f"expected subscriber version {expected_version}, "
+            f"current is {subscriber_row.version}"
+        )
+    changed = payload.model_fields_set
+    for field_name in (
+        "full_name",
+        "telegram_username",
+        "email",
+        "phone",
+        "status",
+        "telegram_membership_status",
+        "expires_at",
+        "notes",
+    ):
+        if field_name not in changed:
+            continue
+        value = getattr(payload, field_name)
+        if field_name in {
+            "full_name",
+            "telegram_username",
+            "status",
+            "telegram_membership_status",
+            "expires_at",
+        } and value is None:
+            raise InvalidCommercialRequestError(
+                f"{field_name} no puede ser null"
+            )
+        setattr(subscriber_row, field_name, value)
+    if subscriber_row.expires_at <= subscriber_row.starts_at:
+        raise InvalidCommercialRequestError(
+            "expires_at debe ser posterior al inicio de la suscripción"
+        )
+    subscriber_row.version += 1
+    subscriber_row.updated_at = datetime.now(UTC)
+    session.flush()
+    return _subscriber_read(subscriber_row)
+
+
+def record_subscriber_payment(
+    session: Session,
+    *,
+    subscriber_id: UUID,
+    payload: PaymentCreate,
+    recorded_by: str,
+    idempotency_key: str,
+) -> tuple[PaymentRead, SubscriberRead, bool]:
+    subscriber_row = get_subscriber(
+        session,
+        subscriber_id=subscriber_id,
+        for_update=True,
+    )
+    normalized_key = " ".join(idempotency_key.split())
+    if not 8 <= len(normalized_key) <= 512:
+        raise InvalidCommercialRequestError(
+            "Idempotency-Key debe tener entre 8 y 512 caracteres"
+        )
+    idempotency_hash = hashlib.sha256(
+        normalized_key.encode("utf-8")
+    ).hexdigest()
+    fingerprint_payload = {
+        "subscriber_id": str(subscriber_id),
+        "payment": payload.model_dump(mode="json"),
+    }
+    request_fingerprint = hashlib.sha256(
+        json.dumps(
+            fingerprint_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    existing = session.scalar(
+        select(BetaPayment).where(
+            BetaPayment.idempotency_key_hash == idempotency_hash
+        )
+    )
+    if existing is not None:
+        if existing.request_fingerprint != request_fingerprint:
+            raise IdempotencyConflictError(
+                "Idempotency-Key ya se usó con otro pago"
+            )
+        return (
+            PaymentRead.model_validate(existing),
+            _subscriber_read(subscriber_row),
+            False,
+        )
+    now = datetime.now(UTC)
+    paid_at = payload.paid_at or now
+    if paid_at > now + timedelta(minutes=5):
+        raise InvalidCommercialRequestError(
+            "paid_at no puede estar en el futuro"
+        )
+    if paid_at < now - timedelta(days=1_825):
+        raise InvalidCommercialRequestError(
+            "paid_at no puede tener más de cinco años"
+        )
+    coverage_starts_at = max(now, subscriber_row.expires_at)
+    coverage_ends_at = coverage_starts_at + timedelta(
+        days=payload.renewal_days
+    )
+    payment = BetaPayment(
+        subscriber_id=subscriber_row.id,
+        amount=payload.amount,
+        method=payload.method,
+        reference=payload.reference,
+        paid_at=paid_at,
+        coverage_starts_at=coverage_starts_at,
+        coverage_ends_at=coverage_ends_at,
+        renewal_days=payload.renewal_days,
+        notes=payload.notes,
+        recorded_by=recorded_by,
+        idempotency_key_hash=idempotency_hash,
+        request_fingerprint=request_fingerprint,
+    )
+    session.add(payment)
+    subscriber_row.status = "active"
+    subscriber_row.expires_at = coverage_ends_at
+    if subscriber_row.telegram_membership_status == "removed":
+        subscriber_row.telegram_membership_status = "pending"
+    subscriber_row.version += 1
+    subscriber_row.updated_at = now
+    session.flush()
+    return (
+        PaymentRead.model_validate(payment),
+        _subscriber_read(subscriber_row, now=now),
+        True,
+    )
+
+
+def list_subscriber_payments(
+    session: Session,
+    *,
+    subscriber_id: UUID,
+    limit: int,
+) -> list[PaymentRead]:
+    get_subscriber(session, subscriber_id=subscriber_id)
+    page_size = _page_size(limit)
+    rows = session.scalars(
+        select(BetaPayment)
+        .where(BetaPayment.subscriber_id == subscriber_id)
+        .order_by(BetaPayment.paid_at.desc(), BetaPayment.id.desc())
+        .limit(page_size)
+    )
+    return [PaymentRead.model_validate(row) for row in rows]
+
+
+def list_launch_checklist(
+    session: Session,
+) -> list[LaunchChecklistItemRead]:
+    rows = session.scalars(
+        select(BetaLaunchChecklistItem).order_by(
+            BetaLaunchChecklistItem.position
+        )
+    )
+    return [LaunchChecklistItemRead.model_validate(row) for row in rows]
+
+
+def update_launch_checklist_item(
+    session: Session,
+    *,
+    item_key: str,
+    payload: LaunchChecklistUpdate,
+    changed_by: str,
+) -> LaunchChecklistItemRead:
+    normalized_key = item_key.strip().lower()
+    item = session.scalar(
+        select(BetaLaunchChecklistItem)
+        .where(BetaLaunchChecklistItem.item_key == normalized_key)
+        .with_for_update()
+    )
+    if item is None:
+        raise LaunchChecklistItemNotFoundError(
+            "elemento de lanzamiento no encontrado"
+        )
+    now = datetime.now(UTC)
+    item.completed = payload.completed
+    item.completed_at = now if payload.completed else None
+    item.completed_by = changed_by if payload.completed else None
+    item.updated_at = now
+    session.flush()
+    return LaunchChecklistItemRead.model_validate(item)
 
 
 def _page_size(limit: int) -> int:
@@ -1387,18 +1928,24 @@ def update_runtime_policy(
 
 __all__ = [
     "CrawlJobNotFoundError",
+    "InvalidCommercialRequestError",
     "InvalidCrawlJobRequestError",
-    "InvalidRuntimePolicyError",
     "InvalidDiscoveryRequestError",
+    "InvalidRuntimePolicyError",
+    "LaunchChecklistItemNotFoundError",
     "ProductNotFoundError",
+    "SubscriberNotFoundError",
     "UnsafeProductConfigurationError",
     "archive_product",
     "bulk_review_discovery_candidates",
     "cancel_crawl_job",
+    "commercial_summary",
     "create_product",
+    "create_subscriber",
     "enqueue_crawl_job",
     "get_crawl_job",
     "get_product",
+    "list_launch_checklist",
     "list_confirmations",
     "list_crawl_jobs",
     "list_crawl_runs",
@@ -1408,12 +1955,18 @@ __all__ = [
     "list_observations",
     "list_offers",
     "list_products",
+    "list_subscriber_payments",
+    "list_subscribers",
     "list_stores",
     "runtime_policy",
     "request_discovery_run",
+    "record_subscriber_payment",
     "review_discovery_candidate",
     "set_product_activation",
     "set_product_variant",
+    "subscriber",
+    "update_launch_checklist_item",
     "update_runtime_policy",
     "update_product",
+    "update_subscriber",
 ]

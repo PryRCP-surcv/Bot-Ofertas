@@ -253,7 +253,8 @@ Si `/health/ready` devuelve `503`, comprueba:
 ```
 
 La API requiere que PostgreSQL esté disponible, que Alembic esté en
-`0013_phase5_2_store_expansion` y que los adapters habilitados carguen sin errores.
+`0015_offer_episode_deduplication` y que los adapters habilitados carguen sin
+errores.
 
 No ejecutes `alembic downgrade 0008_conditioned_offers` sin una copia de
 seguridad: el downgrade elimina la cola, las revisiones administrativas y los

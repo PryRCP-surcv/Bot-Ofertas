@@ -347,7 +347,8 @@ Revisa en `alert list --all`:
 - `Descartes`: puede indicar identidad, variante, marketplace, condición del
   producto, ubicación, base de precio, moneda, disponibilidad o un flag
   desconocido.
-- `Alerta`: puede estar suprimida por deduplicación o cooldown.
+- `Alerta`: puede estar suprimida porque el mismo episodio ya fue enviado o
+  porque una reaparición todavía está dentro de la espera configurada.
 
 Si la alerta está pendiente, valida Telegram según
 [Operación de la Fase 1](phase1-operations.md).

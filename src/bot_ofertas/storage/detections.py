@@ -560,6 +560,14 @@ class DetectionRepository:
         }
         confidence_gate_open = confidence_score >= minimum_alert_confidence
         should_notify = False
+        if allow_notification:
+            self._close_offer_episodes(
+                observation=observation,
+                offer_key=offer_key,
+                channel=normalized_channel,
+                timestamp=timestamp,
+                preserve_offer_key=offer_key if decision.should_alert else None,
+            )
         if (
             decision.should_alert
             and allow_notification
@@ -899,20 +907,40 @@ class DetectionRepository:
                 ]
             )
         )
-        state = self._session.scalar(
+        if observation.tracked_product_id is None:
+            state_filter = OfferAlertState.offer_key == offer_key
+        else:
+            state_filter = (
+                OfferAlertState.tracked_product_id == observation.tracked_product_id
+            )
+        states = self._session.scalars(
             select(OfferAlertState)
             .where(
-                OfferAlertState.offer_key == offer_key,
+                state_filter,
                 OfferAlertState.channel == channel,
             )
+            .order_by(OfferAlertState.offer_key)
             .with_for_update()
+        ).all()
+        state = next(
+            (candidate for candidate in states if candidate.offer_key == offer_key),
+            None,
         )
         if state is None:  # pragma: no cover - insert/select share one transaction
             raise RuntimeError("alert state could not be acquired")
 
+        for previous_state in states:
+            if previous_state.offer_key == offer_key or not previous_state.episode_active:
+                continue
+            previous_state.episode_active = False
+            previous_state.last_inactive_at = timestamp
+            previous_state.updated_at = timestamp
+
         cooldown_expired = (
             state.last_reserved_at is None or state.last_reserved_at <= timestamp - cooldown
         )
+        first_notification = state.last_reserved_at is None
+        reappeared = state.last_reserved_at is not None and not state.episode_active
         severity_increased = _CLASSIFICATION_RANK[
             decision.classification.value
         ] > _CLASSIFICATION_RANK.get(state.last_classification or "none", 0)
@@ -953,13 +981,56 @@ class DetectionRepository:
                     delivery.lease_expires_at = None
                     delivery.updated_at = timestamp
         else:
-            should_notify = cooldown_expired or improved_candidate
+            should_notify = (
+                first_notification
+                or improved_candidate
+                or (reappeared and cooldown_expired)
+            )
+        state.episode_active = True
+        state.last_seen_at = timestamp
+        state.updated_at = timestamp
         if should_notify:
             state.last_classification = decision.classification.value
             state.last_price = observation.price
             state.last_reserved_at = timestamp
             state.updated_at = timestamp
         return should_notify
+
+    def _close_offer_episodes(
+        self,
+        *,
+        observation: PriceObservationRecord,
+        offer_key: str,
+        channel: str,
+        timestamp: datetime,
+        preserve_offer_key: str | None,
+    ) -> None:
+        """Close deal episodes no longer represented by a trustworthy observation."""
+
+        if observation.tracked_product_id is None:
+            state_filter = OfferAlertState.offer_key == offer_key
+        else:
+            state_filter = (
+                OfferAlertState.tracked_product_id == observation.tracked_product_id
+            )
+        states = self._session.scalars(
+            select(OfferAlertState)
+            .where(
+                state_filter,
+                OfferAlertState.channel == channel,
+            )
+            .order_by(OfferAlertState.offer_key)
+            .with_for_update()
+        ).all()
+        for state in states:
+            if (
+                not state.episode_active
+                or state.offer_key == preserve_offer_key
+            ):
+                continue
+            state.episode_active = False
+            state.last_inactive_at = timestamp
+            state.updated_at = timestamp
 
     def save_processing_error(
         self,

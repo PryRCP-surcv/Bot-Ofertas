@@ -17,10 +17,13 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from bot_ofertas.api.cursors import CursorError
 from bot_ofertas.api.service import (
     CrawlJobNotFoundError,
+    InvalidCommercialRequestError,
     InvalidCrawlJobRequestError,
     InvalidDiscoveryRequestError,
     InvalidRuntimePolicyError,
+    LaunchChecklistItemNotFoundError,
     ProductNotFoundError,
+    SubscriberNotFoundError,
     UnsafeProductConfigurationError,
 )
 from bot_ofertas.storage.admin import (
@@ -189,6 +192,22 @@ async def _crawl_job_not_found_handler(
     )
 
 
+async def _commercial_not_found_handler(
+    request: Request,
+    error: Exception,
+) -> JSONResponse:
+    assert isinstance(
+        error,
+        (SubscriberNotFoundError, LaunchChecklistItemNotFoundError),
+    )
+    return problem_response(
+        request,
+        status_code=404,
+        detail=str(error),
+        type_uri="urn:bot-ofertas:problem:commercial-resource-not-found",
+    )
+
+
 async def _unsafe_product_handler(
     request: Request,
     error: Exception,
@@ -211,6 +230,7 @@ async def _invalid_administration_request_handler(
         error,
         (
             InvalidCrawlJobRequestError,
+            InvalidCommercialRequestError,
             InvalidDiscoveryRequestError,
             InvalidRuntimePolicyError,
         ),
@@ -303,6 +323,14 @@ def install_exception_handlers(app: FastAPI) -> None:
         _crawl_job_not_found_handler,
     )
     app.add_exception_handler(
+        SubscriberNotFoundError,
+        _commercial_not_found_handler,
+    )
+    app.add_exception_handler(
+        LaunchChecklistItemNotFoundError,
+        _commercial_not_found_handler,
+    )
+    app.add_exception_handler(
         UnsafeProductConfigurationError,
         _unsafe_product_handler,
     )
@@ -317,6 +345,10 @@ def install_exception_handlers(app: FastAPI) -> None:
     )
     app.add_exception_handler(
         InvalidDiscoveryRequestError,
+        _invalid_administration_request_handler,
+    )
+    app.add_exception_handler(
+        InvalidCommercialRequestError,
         _invalid_administration_request_handler,
     )
     app.add_exception_handler(IntegrityError, _integrity_error_handler)

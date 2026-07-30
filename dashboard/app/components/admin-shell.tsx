@@ -20,6 +20,7 @@ import {
   SettingsIcon,
   StoreIcon,
   TagIcon,
+  UsersIcon,
 } from "./icons";
 import { Button } from "./ui";
 
@@ -30,6 +31,7 @@ export type AdminView =
   | "stores"
   | "discovery"
   | "distribution"
+  | "subscribers"
   | "crawls"
   | "settings";
 
@@ -44,6 +46,7 @@ const navigation: Array<{
   { id: "stores", label: "Tiendas", icon: StoreIcon },
   { id: "discovery", label: "Descubrimiento", icon: SearchIcon },
   { id: "distribution", label: "Distribución", icon: PaperPlaneIcon },
+  { id: "subscribers", label: "Suscriptores", icon: UsersIcon },
   { id: "crawls", label: "Rastreo", icon: RadarIcon },
   { id: "settings", label: "Configuración", icon: SettingsIcon },
 ];
@@ -60,6 +63,10 @@ const viewTitles: Record<AdminView, { eyebrow: string; title: string }> = {
   distribution: {
     eyebrow: "Canal beta comercial",
     title: "Distribución por Telegram",
+  },
+  subscribers: {
+    eyebrow: "Beta comercial controlada",
+    title: "Suscriptores y lanzamiento",
   },
   crawls: { eyebrow: "Operación responsable", title: "Rastreos y ejecuciones" },
   settings: { eyebrow: "Política versionada", title: "Configuración del monitor" },

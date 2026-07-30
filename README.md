@@ -6,8 +6,8 @@ ofertas excepcionales y posibles errores de precio sin realizar compras.
 
 ## Estado actual
 
-Las Fases 1, 2, 3, 4A, 4B, 4C, 5.1 y 5.2 están implementadas para ejecución local y
-privada:
+Las Fases 1, 2, 3, 4A, 4B, 4C, 5.1, 5.2 y 6.1 están implementadas para
+ejecución local y privada:
 
 1. Se registra una URL pública de producto.
 2. El registro de tiendas reconoce el dominio, elige el adapter habilitado y
@@ -42,6 +42,9 @@ privada:
     productos monitoreados.
 19. El panel muestra la salud de la audiencia beta de Telegram y permite enviar
     una prueba fija, sin revelar el token ni el chat ID.
+20. La beta comercial administra suscriptores, vigencias, accesos manuales a
+    Telegram, pagos externos confirmados, renovaciones y controles de
+    lanzamiento sin almacenar tarjetas ni credenciales bancarias.
 
 La primera prueba de la Fase 1 guardó correctamente una barra de sonido a
 `PEN 179.00`, con precio de lista `PEN 499.00`, disponibilidad y vendedor.
@@ -59,8 +62,8 @@ la API de Fase 4A, el panel de Fase 4B y la operación local robusta de Fase 4C 
 están implementados. Las equivalencias entre tiendas son grupos creados y
 verificados manualmente: deben representar la misma marca, modelo y variante, y
 admiten como máximo una publicación por tienda. Aún no existen WhatsApp, Gmail,
-autenticación multiusuario, pagos, membresías ni despliegue permanente en un
-servidor.
+autenticación multiusuario, cobro automático, administración automática de
+miembros ni despliegue permanente en un servidor.
 
 Telegram es actualmente un canal de salida: envía alertas, pero todavía no
 responde `/start`, `/ofertas`, `Hola` ni otros comandos. El panel y la API son
@@ -95,7 +98,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bot-ofertas.ps1 start
 El script construye lo necesario, aplica las migraciones y deja activos
 `postgres`, `api`, `worker`, `watchdog`, `backup` y `dashboard`. El servicio
 `migrations` termina con código `0` después de actualizar el esquema; eso es
-normal. El head actual de migraciones es `0013_phase5_2_store_expansion`.
+normal. El head actual de migraciones es `0015_offer_episode_deduplication`.
 
 Comprueba el estado:
 
@@ -199,6 +202,9 @@ El descubrimiento, sus límites y la revisión de candidatos están en
 [Fase 5.1: descubrimiento controlado](docs/phase5-discovery.md).
 La ampliación a seis tiendas y la audiencia beta están en
 [Fase 5.2: nuevas tiendas y beta por Telegram](docs/phase5-2-expansion-beta.md).
+La administración de suscriptores, pagos externos, renovaciones y lista de
+lanzamiento está en
+[Fase 6.1: beta comercial controlada](docs/phase6-1-commercial-beta.md).
 
 Detener todo sin perder el historial:
 
@@ -307,7 +313,8 @@ Tablas:
   referencias, confirmación y descartes por observación.
 - `offer_confirmation_states`: candidatas que esperan una segunda observación
   independiente.
-- `offer_alert_states`: ventana de deduplicación por oferta exacta.
+- `offer_alert_states`: episodio activo e historial de deduplicación por oferta
+  exacta. Una oferta continua no vuelve a enviarse solo porque pasen 24 horas.
 - `notification_deliveries`: entregas Telegram, leases, intentos y errores
   sanitizados.
 - `admin_config_revisions`: revisiones inmutables y auditables de la política
@@ -317,6 +324,10 @@ Tablas:
 - `worker_runtime_states`: heartbeat, ciclo y estado operativo del worker.
 - `worker_watchdog_states`: incidentes y avisos de caída o recuperación sin
   duplicados.
+- `beta_subscribers`: vigencia, estado comercial y situación manual del acceso
+  a Telegram.
+- `beta_payments`: pagos externos confirmados en PEN, cobertura e idempotencia.
+- `beta_launch_checklist_items`: controles persistentes previos al lanzamiento.
 
 El precio total y las cuotas son campos distintos: una cuota individual nunca se
 usa como precio total. Las condiciones de tarjeta o medio de pago, membresía,
@@ -393,8 +404,9 @@ en `localhost`, y la disponibilidad depende de que esa PC, Docker Desktop e
 Internet estén activos.
 
 La Fase 5.2 ya amplía el descubrimiento a seis tiendas y deja operativa una
-audiencia beta única de Telegram. Las personas se agregan y retiran manualmente
-del grupo después de comprobar su pago por fuera del sistema. Los siguientes
-hitos son el escalamiento, el despliegue permanente y, si la beta lo justifica,
-pagos, membresías y audiencias segmentadas. WhatsApp y correo podrán añadirse
+audiencia beta única de Telegram. La Fase 6.1 registra suscriptores, pagos
+externos, renovaciones, vencimientos y preparación del lanzamiento; las
+personas todavía se agregan y retiran manualmente del grupo. Los siguientes
+hitos son la prueba piloto, el despliegue permanente y, si la beta lo
+justifica, cobro y membresía automatizados. WhatsApp y correo podrán añadirse
 como canales sobre el mismo contrato de notificaciones.

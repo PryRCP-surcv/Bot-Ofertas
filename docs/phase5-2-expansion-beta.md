@@ -70,9 +70,10 @@ texto del usuario, por lo que no convierte la API en un relay arbitrario.
 
 Esta etapa no procesa pagos, no mantiene una tabla de clientes y no entrega
 acceso al panel. Es una decisión intencional para validar el servicio con bajo
-costo. Cuando el volumen lo justifique se podrá añadir membresía individual,
-vencimientos, pagos y audiencias segmentadas sin cambiar el detector ni los
-adaptadores de tienda.
+costo. La Fase 6.1 ya añade el registro administrativo de membresías,
+vencimientos y pagos externos confirmados sin cambiar el detector ni los
+adaptadores de tienda. Las altas y bajas reales del grupo continúan siendo
+manuales.
 
 ## API administrativa
 
@@ -92,6 +93,7 @@ Desde PowerShell en la raíz:
 .\scripts\bot-ofertas.ps1 start
 ```
 
-El servicio `migrations` aplica `0013_phase5_2_store_expansion`; luego se
+El servicio `migrations` aplica actualmente
+`0015_offer_episode_deduplication`; luego se
 reconstruyen API, worker y panel. Los servicios continúan escuchando solo en
 `localhost`.

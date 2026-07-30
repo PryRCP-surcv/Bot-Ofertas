@@ -50,6 +50,7 @@ test("mantiene la credencial solo en memoria y separa las pantallas", async () =
     offers,
     products,
     stores,
+    subscribers,
     crawls,
     settings,
   ] = await Promise.all([
@@ -60,6 +61,7 @@ test("mantiene la credencial solo en memoria y separa las pantallas", async () =
     readFile(new URL("app/views/offers-view.tsx", dashboardRoot), "utf8"),
     readFile(new URL("app/views/products-view.tsx", dashboardRoot), "utf8"),
     readFile(new URL("app/views/stores-view.tsx", dashboardRoot), "utf8"),
+    readFile(new URL("app/views/subscribers-view.tsx", dashboardRoot), "utf8"),
     readFile(new URL("app/views/crawls-view.tsx", dashboardRoot), "utf8"),
     readFile(new URL("app/views/settings-view.tsx", dashboardRoot), "utf8"),
   ]);
@@ -89,6 +91,10 @@ test("mantiene la credencial solo en memoria y separa las pantallas", async () =
   assert.match(offers, /state/);
   assert.match(products, /If-Match|etagForVersion/);
   assert.match(stores, /Añadir una tienda nueva requiere/);
+  assert.match(subscribers, /Registrar pago/);
+  assert.match(subscribers, /makeIdempotencyKey\("beta-payment"\)/);
+  assert.match(subscribers, /no expulsa miembros por sí solo/i);
+  assert.doesNotMatch(subscribers, /número de tarjeta|card_number/i);
   assert.match(crawls, /Idempotency|makeIdempotencyKey/);
   assert.match(crawls, /Elegibles visibles/);
   assert.match(crawls, /Todos los elegibles activos/);
