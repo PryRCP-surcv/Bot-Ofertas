@@ -44,10 +44,14 @@ def test_reported_cycle_records_unexpected_failure() -> None:
 
 
 def test_worker_reporting_registers_start_heartbeat_and_stop(monkeypatch) -> None:
+    database_settings = Mock()
     engine = Mock()
     worker = Mock(spec=WorkerStatusService)
     heartbeat = Mock()
-    monkeypatch.setattr(cli, "create_database_engine", Mock(return_value=engine))
+    settings_factory = Mock(return_value=database_settings)
+    engine_factory = Mock(return_value=engine)
+    monkeypatch.setattr(cli.DatabaseSettings, "from_env", settings_factory)
+    monkeypatch.setattr(cli, "create_database_engine", engine_factory)
     monkeypatch.setattr(cli, "create_session_factory", Mock(return_value=Mock()))
     monkeypatch.setattr(cli, "WorkerStatusService", Mock(return_value=worker))
     monkeypatch.setattr(cli, "WorkerHeartbeatLoop", Mock(return_value=heartbeat))
@@ -60,13 +64,19 @@ def test_worker_reporting_registers_start_heartbeat_and_stop(monkeypatch) -> Non
     heartbeat.stop.assert_called_once_with()
     worker.register_stop.assert_called_once_with(error=None)
     engine.dispose.assert_called_once_with()
+    settings_factory.assert_called_once_with()
+    engine_factory.assert_called_once_with(database_settings)
 
 
 def test_worker_reporting_persists_terminal_error(monkeypatch) -> None:
+    database_settings = Mock()
     engine = Mock()
     worker = Mock(spec=WorkerStatusService)
     heartbeat = Mock()
-    monkeypatch.setattr(cli, "create_database_engine", Mock(return_value=engine))
+    settings_factory = Mock(return_value=database_settings)
+    engine_factory = Mock(return_value=engine)
+    monkeypatch.setattr(cli.DatabaseSettings, "from_env", settings_factory)
+    monkeypatch.setattr(cli, "create_database_engine", engine_factory)
     monkeypatch.setattr(cli, "create_session_factory", Mock(return_value=Mock()))
     monkeypatch.setattr(cli, "WorkerStatusService", Mock(return_value=worker))
     monkeypatch.setattr(cli, "WorkerHeartbeatLoop", Mock(return_value=heartbeat))
@@ -79,3 +89,5 @@ def test_worker_reporting_persists_terminal_error(monkeypatch) -> None:
 
     worker.register_stop.assert_called_once_with(error="RuntimeError: fallo final")
     engine.dispose.assert_called_once_with()
+    settings_factory.assert_called_once_with()
+    engine_factory.assert_called_once_with(database_settings)

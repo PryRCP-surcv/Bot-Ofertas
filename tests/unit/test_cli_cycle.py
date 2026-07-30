@@ -21,6 +21,11 @@ def test_cycle_isolates_stage_failure_and_still_dispatches_notifications(
         calls.append("notify")
         return 0
 
+    def discover(*_args: object, **_kwargs: object) -> argparse.Namespace:
+        calls.append("discovery")
+        return argparse.Namespace(returncode=0)
+
+    monkeypatch.setattr(cli.subprocess, "run", discover)
     monkeypatch.setattr(cli, "_crawl", failing_crawl)
     monkeypatch.setattr(cli, "_analyze", analyze)
     monkeypatch.setattr(cli, "_notify", notify)
@@ -35,5 +40,5 @@ def test_cycle_isolates_stage_failure_and_still_dispatches_notifications(
 
     output = capsys.readouterr()
     assert result == 1
-    assert calls == ["crawl", "analyze", "notify"]
+    assert calls == ["discovery", "crawl", "analyze", "notify"]
     assert "Error en rastreo" in output.err
