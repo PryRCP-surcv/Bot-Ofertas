@@ -17,8 +17,8 @@ class PromartAdapter(StoreAdapter):
         max_targets_per_run=5,
         requires_explicit_product_url=True,
         notes=(
-            "Historial piloto de unidad fija; alertas bloqueadas hasta modelar "
-            "ubicacion."
+            "Precio público online de unidad fija. Las alertas recuerdan confirmar "
+            "delivery y disponibilidad para el distrito de Lima."
         ),
     )
     spider_class = PromartProductSpider
@@ -30,8 +30,8 @@ class PromartAdapter(StoreAdapter):
             daily_approval_limit=40,
             active_product_limit=400,
             notes=(
-                "Índice oficial anunciado en robots.txt; los productos aprobados "
-                "mantienen el bloqueo de alertas hasta verificar ubicación."
+                "Índice oficial anunciado en robots.txt; solo se aprueban bases "
+                "unitarias y vendedor Promart verificado."
             ),
         ),
     )

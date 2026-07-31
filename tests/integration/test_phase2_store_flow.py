@@ -99,7 +99,7 @@ def test_phase2_parsers_allow_disclosed_conditions_but_block_unverified_context(
             )
             if values["sku"] == "sku-negro" and values["seller_id"] == "1"
         )
-        assert "location_context_unverified" in promart_values["quality_flags"]
+        assert "delivery_location_confirmation" in promart_values["quality_flags"]
         assert "unsupported_price_basis" not in promart_values["quality_flags"]
         promart_observation_id = observations.save(
             run_id=promart_run.id,
@@ -133,9 +133,9 @@ def test_phase2_parsers_allow_disclosed_conditions_but_block_unverified_context(
         ]
 
         promart_detection = detections[promart_observation_id]
-        assert promart_detection.classification == "none"
-        assert "quality_flags_present" in promart_detection.rejection_reasons
-        assert promart_detection.notification_status == "not_applicable"
+        assert promart_detection.classification == "good_deal"
+        assert promart_detection.rejection_reasons == []
+        assert promart_detection.notification_status == "pending"
     finally:
         session.close()
         transaction.rollback()

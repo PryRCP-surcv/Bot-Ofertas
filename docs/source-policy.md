@@ -1,6 +1,6 @@
 # Política de fuentes
 
-Última revisión: 29 de julio de 2026.
+Última revisión: 30 de julio de 2026.
 
 Este proyecto solo consulta recursos públicos para observar precios; no inicia
 sesión, no agrega productos al carrito y no realiza compras. Cada dominio
@@ -21,7 +21,8 @@ integración permanezca activa.
   `tracked_products`.
 - Para descubrir candidatos, usar solo fuentes declaradas por el adapter y
   revisadas en esta política. En Fase 5.2 se admiten exclusivamente los
-  sitemaps oficiales de Coolbox, Oechsle, Promart, Cassinelli, EFE y La Curacao.
+  sitemaps oficiales de Coolbox, Oechsle, Promart, Cassinelli, EFE,
+  La Curacao, plazaVea, Topitop y Vega.
 - No usar búsquedas ni categorías. Cada ejecución de descubrimiento consulta
   como máximo el índice, `robots.txt` cuando corresponda y un sitemap de
   productos rotado; nunca recorre todos los archivos de una tienda a la vez.
@@ -42,8 +43,11 @@ integración permanezca activa.
   observaciones de confirmación.
 - Mantener limpias las referencias históricas y equivalentes generales: solo
   observaciones sin flags de calidad forman esas referencias.
-- Bloquear problemas de identidad, vendedor, variante, ubicación, base de
-  precio, moneda, precio o stock, además de cualquier flag desconocido.
+- Bloquear problemas de identidad, vendedor, variante, ubicación ambigua, base
+  de precio, moneda, precio o stock, además de cualquier flag desconocido. Una
+  ubicación de delivery que la persona deba confirmar puede mostrarse como
+  condición informativa únicamente cuando el precio online, vendedor y unidad
+  ya fueron verificados.
 - Tratar cada combinación SKU + vendedor como una oferta independiente. Un
   vendedor tercero se marca como marketplace y no se mezcla con la tienda.
 - Las alertas son indicios. Ninguna alerta garantiza stock, disponibilidad,
@@ -51,16 +55,18 @@ integración permanezca activa.
 
 ## Estado de tiendas evaluadas
 
-| Tienda | Estado al 2026-07-29 | Evidencia y decisión |
+| Tienda | Estado al 2026-07-30 | Evidencia y decisión |
 |---|---|---|
 | Coolbox | Piloto y descubrimiento habilitados | Su [`robots.txt`](https://www.coolbox.pe/robots.txt) permite expresamente `/api/catalog_system/pub/` y anuncia el [sitemap](https://www.coolbox.pe/sitemap.xml). Las fichas y el catálogo público VTEX responden sin login. Sus [términos](https://www.coolbox.pe/terminos-y-condiciones) contemplan marketplace, condiciones por medio de pago y errores tipográficos. |
 | Oechsle | Piloto y descubrimiento habilitados | Su [`robots.txt`](https://www.oechsle.pe/robots.txt) bloquea checkout y publica un [sitemap](https://www.oechsle.pe/sitemap.xml), sin bloquear las fichas `/p` ni el catálogo público usado por el adapter. Sus [términos](https://www.oechsle.pe/terminos-y-condiciones) advierten variaciones de precio, marketplace y promociones o cuotas con Tarjeta Oh!. Las pruebas, un rastreo vivo controlado de una ficha y la primera vuelta acotada de descubrimiento pasaron entre el 28 y 29 de julio de 2026. |
-| Promart | Historial y descubrimiento habilitados; alertas bloqueadas | Su [`robots.txt`](https://www.promart.pe/robots.txt) bloquea checkout y publica un [sitemap](https://www.promart.pe/sitemap.xml); fichas y catálogo público VTEX respondieron sin login en la revisión. Sus [términos](https://www.promart.pe/terminos-y-condiciones) indican precios según ciudad de despacho, marketplace y posible anulación por error de digitación. Las pruebas, un rastreo vivo controlado de una ficha y la primera vuelta acotada de descubrimiento pasaron entre el 28 y 29 de julio de 2026. Toda observación conserva `location_context_unverified`, por lo que el detector no alerta hasta modelar una ubicación comprobable. |
+| Promart | Piloto y descubrimiento habilitados | Su [`robots.txt`](https://www.promart.pe/robots.txt) bloquea checkout y publica un [sitemap](https://www.promart.pe/sitemap.xml); fichas y catálogo público VTEX respondieron sin login en la revisión. Sus [términos](https://www.promart.pe/terminos-y-condiciones) indican precios según ciudad de despacho, marketplace y posible anulación por error de digitación. Desde el 30 de julio el parser exige vendedor Promart, unidad fija y coincidencia exacta de ficha, y muestra `delivery_location_confirmation` como recordatorio informativo. Marketplace, unidad variable e identidad ambigua siguen bloqueados. |
 | Cassinelli | Piloto y descubrimiento habilitados | Su [`robots.txt`](https://www.cassinelli.com/robots.txt) separa rutas privadas de las fichas públicas. El [índice público revisado](https://www.cassinelli.com/sitemap.xml), las fichas y el catálogo VTEX respondieron sin login. Sus [términos](https://www.cassinelli.com/terminos-y-condiciones) describen venta web en Perú y precios en soles. Las bases variables por peso, superficie o longitud se guardan, pero bloquean alertas hasta representar la unidad exacta. |
 | EFE | Piloto y descubrimiento habilitados | Su [`robots.txt`](https://www.efe.com.pe/robots.txt) bloquea búsqueda, cuenta y checkout, y anuncia el [sitemap oficial](https://www.efe.com.pe/media/sitemap/sitemap_efe.xml). La ficha pública expone Product/Offer JSON-LD en PEN y precio HTML verificable. Sus [términos](https://www.efe.com.pe/terminos-y-condiciones) contemplan marketplace y señalan la ficha como referencia final. |
 | La Curacao | Piloto y descubrimiento habilitados | Su [`robots.txt`](https://www.lacuracao.pe/robots.txt) bloquea búsqueda, cuenta y checkout, y anuncia el [sitemap oficial](https://www.lacuracao.pe/media/sitemap/sitemap_curacao.xml). La ficha pública expone Product/Offer JSON-LD en PEN y precio HTML verificable. Sus [términos](https://www.lacuracao.pe/terminos-y-condiciones) contemplan marketplace y venta online en Perú. |
+| plazaVea | Piloto de unidad fija y descubrimiento habilitados | Su [`robots.txt`](https://www.plazavea.com.pe/robots.txt) publica el [sitemap oficial](https://www.plazavea.com.pe/sitemap.xml) y separa rutas privadas del catálogo público. Sus [términos](https://www.plazavea.com.pe/terminos-y-condiciones) contemplan ubicación, productos por peso y marketplace. El adapter solo considera elegible `sellerId=1` junto con `Plaza Vea`, `measurementUnit` unitaria y `unitMultiplier=1`; el resto se conserva, pero bloquea la alerta. El smoke test del 30 de julio guardó una ficha pública en PEN y stock propio. |
+| Topitop | Piloto y descubrimiento habilitados | Su [`robots.txt`](https://www.topitop.pe/robots.txt) publica el [sitemap oficial](https://www.topitop.pe/sitemap.xml) y excluye cuenta y checkout. La [tienda pública](https://www.topitop.pe/) expone catálogo VTEX con SKU por talla. El adapter exige `sellerId=1` junto con `TRADING FASHION LINE S.A.` y conserva cada talla como variante separada. El smoke test del 30 de julio guardó cuatro tallas en PEN y stock propio. |
+| Vega | Piloto de unidad fija y descubrimiento habilitados | Su [`robots.txt`](https://www.vega.pe/robots.txt) publica el [sitemap oficial](https://www.vega.pe/sitemap.xml) y excluye cuenta, login, búsqueda y checkout. Sus [términos](https://www.vega.pe/terminos-y-condiciones-generales) cubren la venta online. El adapter exige `sellerId=1` junto con `CORPORACIÓN VEGA`, unidad fija y confirmación visible de delivery. El smoke test del 30 de julio guardó una ficha pública en PEN y stock propio. |
 | Tottus | Diferida | Su [`robots.txt`](https://www.tottus.com.pe/robots.txt) distingue fichas y rutas privadas, pero el sitemap revisado respondió de forma inestable y el catálogo depende de ubicación. No se fuerza la integración ni se intenta eludir esa indisponibilidad. |
-| plazaVea | Diferida | Aunque su [`robots.txt`](https://www.plazavea.com.pe/robots.txt) publica un [sitemap](https://www.plazavea.com.pe/sitemap.xml) y existe un catálogo público, sus [términos](https://www.plazavea.com.pe/terminos-y-condiciones) incluyen productos por peso, ubicación, marketplace, sustituciones y reacondicionados. Se difiere hasta modelar correctamente esas dimensiones. |
 | Hiraoka | No integrar | Su [`robots.txt`](https://hiraoka.com.pe/robots.txt) bloquea expresamente `User-agent: Scrapy`; además, sus [términos](https://hiraoka.com.pe/terminos-y-condiciones) restringen la extracción y reutilización del sitio. |
 | Ripley | No integrar | La consulta directa incluso de su [`robots.txt`](https://simple.ripley.com.pe/robots.txt) recibió una página de bloqueo del perímetro. Sus [términos oficiales](https://simple.ripley.com.pe/minisitios/especial/servicio-al-cliente/terminos-condiciones/index.html) también describen Mercado Ripley y precios variables. No se intentará evadir el bloqueo. |
 | Tai Loy | No integrar | Su [`robots.txt`](https://www.tailoy.com.pe/robots.txt) solo declara agentes concretos y publica un sitemap; no ofrece una autorización general. Sus [términos](https://www.tailoy.com.pe/terminos-y-condiciones) restringen reproducción, puesta a disposición y reutilización sin autorización escrita. |
@@ -68,7 +74,7 @@ integración permanezca activa.
 
 ## Descubrimiento controlado de Fases 5.1 y 5.2
 
-- Fuentes activas: los seis índices oficiales ya citados.
+- Fuentes activas: los nueve índices oficiales ya citados.
 - Frecuencia mínima: una vuelta por fuente cada 1.440 minutos.
 - Presupuesto por vuelta: dos documentos de sitemap como máximo, además de la
   comprobación de `robots.txt` realizada por Scrapy.
@@ -76,16 +82,18 @@ integración permanezca activa.
   exactamente con `/sitemap/product-N.xml`; el cursor persistente continúa con
   otro archivo en la siguiente vuelta.
 - Volumen: hasta 100 candidatos en Coolbox y 75 en Oechsle o Promart por
-  ejecución; Cassinelli, EFE y La Curacao incorporan hasta 50 por ejecución.
-  Un candidato repetido se actualiza, no se duplica.
+  ejecución; Cassinelli, EFE, La Curacao, plazaVea, Topitop y Vega incorporan
+  hasta 50 por ejecución. Un candidato repetido se actualiza, no se duplica.
 - Activación: manual desde el panel o la API, con 40 aprobaciones diarias por
   tienda. Los máximos activos iniciales siguen siendo 500 para Coolbox, 400
-  para Oechsle o Promart y 300 para Cassinelli, EFE o La Curacao.
+  para Oechsle o Promart y 300 para Cassinelli, EFE, La Curacao, plazaVea,
+  Topitop o Vega.
 - Seguridad: solo HTTPS, mismo hostname revisado, sin credenciales, puertos
   alternativos, redirects externos, DTD ni entidades XML. Un 403, 429, 503,
   bloqueo o CAPTCHA pausa la tienda y no se intenta evadirlo.
-- Promart conserva `location_context_unverified`: aprobar una URL permite
-  historial, pero no elimina el bloqueo de alertas.
+- Promart, plazaVea y Vega conservan `delivery_location_confirmation`: no
+  bloquea una oferta válida, pero obliga a que Telegram recuerde confirmar
+  disponibilidad y delivery para el distrito de Lima.
 - Los sitemaps Magento de EFE y La Curacao mezclan categorías y productos. El
   parser solo toma entradas que incluyen la extensión estándar `image:image`;
   después el adapter vuelve a exigir una ficha raíz `.html` exacta.
@@ -148,26 +156,35 @@ Los dos pilotos deben cumplir todas estas condiciones:
 En Promart el parser solo considera verificable una base con
 `measurementUnit` de unidad y `unitMultiplier=1`. Cualquier campo ausente o base
 por peso, superficie, longitud o multiplicador distinto genera
-`unsupported_price_basis`. Además, todas sus observaciones reciben
-`location_context_unverified`: se guardan en el historial, pero el detector las
-rechaza hasta incorporar un contexto geográfico verificable.
+`unsupported_price_basis`. Una oferta propia válida recibe
+`delivery_location_confirmation`: puede alertar, pero el mensaje recuerda
+comprobar delivery y disponibilidad para el distrito de Lima. Una identidad de
+vendedor inconsistente sigue generando un flag bloqueante.
 
-## Motivos para diferir plazaVea
+## Alcance de plazaVea, Topitop y Vega
 
-La fuente pública es técnicamente similar a VTEX, pero una misma comparación
-puede cambiar por:
+Las tres tiendas comparten el parser VTEX, pero conservan adapters, identidad de
+vendedor, dominio, spider, límites, fixtures y pruebas independientes:
 
-- peso final y unidad de venta;
-- ubicación y disponibilidad;
-- sustituciones de supermercado;
-- vendedores marketplace o internacionales;
-- condición nueva, reacondicionada o reconstruida;
-- promociones ligadas al medio de pago.
+- plazaVea y Vega solo permiten bases unitarias exactas. Kilogramos,
+  multiplicadores distintos de uno y campos ausentes generan
+  `unsupported_price_basis` y no pueden alertar.
+- plazaVea reconoce como vendedor propio únicamente la combinación revisada
+  `sellerId=1` y `Plaza Vea`; Vega exige `sellerId=1` y
+  `CORPORACIÓN VEGA`.
+- Topitop exige `sellerId=1` y `TRADING FASHION LINE S.A.`. Cada talla queda
+  separada por SKU y variante, por lo que no se mezclan tallas al comparar.
+- Los vendedores terceros se guardan como marketplace, pero el detector los
+  excluye. Un ID propio con nombre no revisado, o viceversa, genera un flag de
+  identidad ambiguo bloqueante.
+- El payload debe corresponder exactamente al slug solicitado. No se acepta que
+  una respuesta de búsqueda distinta sustituya silenciosamente a la ficha.
+- Todos operan en PEN, con una solicitud concurrente por dominio, pausa,
+  `robots.txt`, `AutoThrottle` y circuito ante 403, 429, 503, bloqueo o CAPTCHA.
 
-Aunque `phase3-v2` ya muestra las condiciones comerciales, integrar plazaVea
-antes de representar correctamente peso, sustituciones, ubicación, vendedor y
-condición produciría falsos positivos. La decisión se revisará cuando todas esas
-dimensiones puedan verificarse de forma equivalente.
+El alta del 30 de julio comenzó con 20 candidatos aprobados por tienda, más una
+ficha piloto validada en vivo. Los demás candidatos permanecen pendientes para
+otra ampliación y no consumen rastreos.
 
 ## Revisión antes de ampliar o desplegar
 

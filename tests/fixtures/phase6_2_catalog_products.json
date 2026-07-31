@@ -1,0 +1,135 @@
+{
+  "vega": [
+    {
+      "productId": "720235",
+      "productName": "Gaseosa Demo Botella 1.5L",
+      "productReference": "720235",
+      "linkText": "gaseosa-demo-botella-1-5l-720235",
+      "brand": "Marca Demo",
+      "categories": ["/Bebidas/Gaseosas/"],
+      "items": [
+        {
+          "itemId": "720235",
+          "name": "Gaseosa Demo Botella 1.5L",
+          "measurementUnit": "un",
+          "unitMultiplier": 1,
+          "referenceId": {"Key": "RefId", "Value": "720235"},
+          "variations": [],
+          "sellers": [
+            {
+              "sellerId": "1",
+              "sellerName": "CORPORACIÓN VEGA",
+              "commertialOffer": {
+                "Price": 4.5,
+                "ListPrice": 6,
+                "AvailableQuantity": 99999,
+                "IsAvailable": true,
+                "Installments": []
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "plazavea": [
+    {
+      "productId": "5188",
+      "productName": "Agua Mineral Demo Botella 600ml",
+      "productReference": "5188",
+      "linkText": "agua-mineral-demo-botella-600ml",
+      "brand": "Marca Demo",
+      "categories": ["/Bebidas/Agua/"],
+      "items": [
+        {
+          "itemId": "5122",
+          "name": "Agua Mineral Demo Botella 600ml",
+          "measurementUnit": "un",
+          "unitMultiplier": 1,
+          "referenceId": {"Key": "RefId", "Value": "5122"},
+          "variations": [],
+          "sellers": [
+            {
+              "sellerId": "1",
+              "sellerName": "Plaza Vea",
+              "commertialOffer": {
+                "Price": 1.9,
+                "ListPrice": 2,
+                "AvailableQuantity": 299,
+                "IsAvailable": true,
+                "Installments": []
+              }
+            },
+            {
+              "sellerId": "market-8",
+              "sellerName": "Tienda Marketplace",
+              "commertialOffer": {
+                "Price": 1.5,
+                "ListPrice": 2,
+                "AvailableQuantity": 20,
+                "IsAvailable": true,
+                "Installments": []
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "topitop": [
+    {
+      "productId": "3220777",
+      "productName": "Casaca Mujer Demo Negro",
+      "productReference": "3220777",
+      "linkText": "casaca-mujer-demo-negro-3220777",
+      "brand": "Xiomi",
+      "categories": ["/Mujer/Casacas/"],
+      "items": [
+        {
+          "itemId": "3220777",
+          "name": "Casaca Mujer Demo Negro XS",
+          "measurementUnit": "un",
+          "unitMultiplier": 1,
+          "referenceId": {"Key": "RefId", "Value": "3220777"},
+          "variations": ["Talla"],
+          "Talla": ["XS"],
+          "sellers": [
+            {
+              "sellerId": "1",
+              "sellerName": "TRADING FASHION LINE S.A.",
+              "commertialOffer": {
+                "Price": 129.95,
+                "ListPrice": 259.9,
+                "AvailableQuantity": 1,
+                "IsAvailable": true,
+                "Installments": []
+              }
+            }
+          ]
+        },
+        {
+          "itemId": "3220778",
+          "name": "Casaca Mujer Demo Negro S",
+          "measurementUnit": "un",
+          "unitMultiplier": 1,
+          "referenceId": {"Key": "RefId", "Value": "3220778"},
+          "variations": ["Talla"],
+          "Talla": ["S"],
+          "sellers": [
+            {
+              "sellerId": "1",
+              "sellerName": "TRADING FASHION LINE S.A.",
+              "commertialOffer": {
+                "Price": 129.95,
+                "ListPrice": 259.9,
+                "AvailableQuantity": 10,
+                "IsAvailable": true,
+                "Installments": []
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

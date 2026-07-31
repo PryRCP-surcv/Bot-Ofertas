@@ -12,6 +12,7 @@ from bot_ofertas.crawling.promart import (
     parse_promart_products,
 )
 from bot_ofertas.crawling.spiders.promart_product import PromartProductSpider
+from bot_ofertas.detection import assess_quality_flags
 from bot_ofertas.domain import PriceObservation
 from bot_ofertas.stores.promart import PromartAdapter
 
@@ -78,8 +79,9 @@ def test_parser_separates_sku_seller_variant_and_installments() -> None:
     assert own.installments[0].amount == Decimal("49.975")
     assert own.installments[0].total == Decimal("199.9")
     assert own.price != own.installments[0].amount
-    assert "location_context_unverified" in own.quality_flags
+    assert "delivery_location_confirmation" in own.quality_flags
     assert "unsupported_price_basis" not in own.quality_flags
+    assert assess_quality_flags(own.quality_flags).blocking_quality_flags == ()
     assert marketplace.is_marketplace is True
     assert marketplace.seller_name == "Vendedor Marketplace"
     assert marketplace.sku == own.sku

@@ -128,6 +128,12 @@ def test_generic_condition_is_used_only_without_a_more_specific_flag() -> None:
     )
 
 
+def test_delivery_location_reminder_is_rendered_without_hiding_the_offer() -> None:
+    assert _conditions(("delivery_location_confirmation",)) == (
+        "confirma disponibilidad y delivery para tu distrito de Lima",
+    )
+
+
 @pytest.mark.parametrize(
     ("aliases", "expected_label"),
     [

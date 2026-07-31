@@ -50,6 +50,7 @@ _CONDITIONAL_FLAG_REASONS = {
 INFORMATIONAL_QUALITY_FLAGS = frozenset(
     {
         "available_quantity_sentinel",
+        "delivery_location_confirmation",
         "non_positive_list_price",
         "list_price_below_price",
         *_CONDITIONAL_FLAG_REASONS,

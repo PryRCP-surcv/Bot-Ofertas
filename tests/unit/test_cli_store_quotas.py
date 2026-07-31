@@ -68,19 +68,25 @@ def test_claim_batches_enforce_phase2_store_caps_and_intervals(monkeypatch) -> N
             )
 
     assert claimed_per_store == {
-        "cassinelli": 4,
-        "coolbox": 4,
-        "curacao": 3,
-        "efe": 3,
-        "oechsle": 3,
-        "promart": 3,
+        "cassinelli": 3,
+        "coolbox": 3,
+        "curacao": 2,
+        "efe": 2,
+        "oechsle": 2,
+        "plazavea": 2,
+        "promart": 2,
+        "topitop": 2,
+        "vega": 2,
     }
     assert calls == [
-        ("cassinelli", 4, 60),
-        ("coolbox", 4, 30),
-        ("curacao", 3, 60),
-        ("efe", 3, 60),
-        ("oechsle", 3, 60),
-        ("promart", 3, 60),
+        ("cassinelli", 3, 60),
+        ("coolbox", 3, 30),
+        ("curacao", 2, 60),
+        ("efe", 2, 60),
+        ("oechsle", 2, 60),
+        ("plazavea", 2, 60),
+        ("promart", 2, 60),
+        ("topitop", 2, 60),
+        ("vega", 2, 60),
     ]
     assert engine.disposed is True

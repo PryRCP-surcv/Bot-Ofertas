@@ -46,6 +46,9 @@ _CONDITION_LABELS = {
     "minimum_quantity_price": "requiere una cantidad mínima de compra",
     "quantity_tier_price": "requiere una cantidad mínima de compra",
     "conditional_promotion_price": "promoción con condiciones adicionales",
+    "delivery_location_confirmation": (
+        "confirma disponibilidad y delivery para tu distrito de Lima"
+    ),
 }
 _GENERIC_CONDITION_FLAG = "conditional_promotion_price"
 

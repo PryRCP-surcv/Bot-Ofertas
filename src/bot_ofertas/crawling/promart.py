@@ -2,28 +2,28 @@
 
 from __future__ import annotations
 
-import unicodedata
 from collections.abc import Mapping
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
 from typing import Any
-from urllib.parse import unquote, urlsplit
 from uuid import UUID
 
+from bot_ofertas.crawling.retail_vtex import (
+    is_exact_own_seller,
+    normalize_root_vtex_product_url,
+    reviewed_retail_offer_quality_flags,
+    validate_vtex_payload_identity,
+)
 from bot_ofertas.crawling.vtex import (
     VtexParserConfig,
     VtexPayloadError,
     build_vtex_catalog_url,
-    conditional_vtex_price_flags,
-    normalize_vtex_product_url,
     parse_vtex_products,
 )
 
 PROMART_HOSTS = frozenset({"promart.pe", "www.promart.pe"})
-EXTRACTOR_VERSION = "promart-vtex-v1"
+EXTRACTOR_VERSION = "promart-vtex-v2"
 _OWN_SELLER_ID = "1"
-_OWN_SELLER_NAME = "promart"
-_FIXED_MEASUREMENT_UNITS = frozenset({"un", "unidad", "unit"})
+_OWN_SELLER_NAMES = frozenset({"Promart"})
 
 
 class PromartPayloadError(VtexPayloadError):
@@ -33,17 +33,8 @@ class PromartPayloadError(VtexPayloadError):
 def normalize_promart_product_url(url: str) -> str:
     """Accept only explicit canonical Promart product-detail paths."""
 
-    candidate = url.strip()
-    try:
-        parts = urlsplit(candidate)
-    except ValueError as exc:
-        raise ValueError("The Promart product URL is invalid.") from exc
-    path_segments = [segment for segment in unquote(parts.path).split("/") if segment]
-    if len(path_segments) != 2:
-        raise ValueError("The Promart URL must use the explicit '/product-slug/p' form.")
-
-    return normalize_vtex_product_url(
-        candidate,
+    return normalize_root_vtex_product_url(
+        url,
         hosts=PROMART_HOSTS,
         canonical_host="www.promart.pe",
         display_name="Promart",
@@ -63,7 +54,12 @@ def build_promart_catalog_url(product_url: str) -> str:
 def is_promart_own_seller(seller_id: str, seller_name: str) -> bool:
     """Recognize Promart only when both reviewed seller identifiers agree."""
 
-    return seller_id.strip() == _OWN_SELLER_ID and _searchable_text(seller_name) == _OWN_SELLER_NAME
+    return is_exact_own_seller(
+        seller_id,
+        seller_name,
+        expected_id=_OWN_SELLER_ID,
+        expected_names=_OWN_SELLER_NAMES,
+    )
 
 
 def _promart_offer_quality_flags(
@@ -72,21 +68,16 @@ def _promart_offer_quality_flags(
     seller: Mapping[str, Any],
     offer: Mapping[str, Any],
 ) -> list[str]:
-    flags: list[str] = ["location_context_unverified"]
-    seller_id = _optional_text(seller.get("sellerId"))
-    seller_name = _optional_text(seller.get("sellerName"))
-    id_claims_own = seller_id == _OWN_SELLER_ID
-    name_claims_own = seller_name is not None and _searchable_text(seller_name) == _OWN_SELLER_NAME
-    if id_claims_own != name_claims_own:
-        flags.append("ambiguous_promart_seller_identity")
-
-    measurement_unit = _searchable_text(item.get("measurementUnit"))
-    unit_multiplier = _positive_decimal(item.get("unitMultiplier"))
-    if measurement_unit not in _FIXED_MEASUREMENT_UNITS or unit_multiplier != Decimal("1"):
-        flags.append("unsupported_price_basis")
-
-    flags.extend(conditional_vtex_price_flags(product, item, seller, offer))
-    return flags
+    return reviewed_retail_offer_quality_flags(
+        product,
+        item,
+        seller,
+        offer,
+        expected_seller_id=_OWN_SELLER_ID,
+        expected_seller_names=_OWN_SELLER_NAMES,
+        ambiguous_seller_flag="ambiguous_promart_seller_identity",
+        delivery_location_confirmation=True,
+    )
 
 
 _PARSER_CONFIG = VtexParserConfig(
@@ -108,7 +99,13 @@ def parse_promart_products(
 ) -> list[dict[str, Any]]:
     """Normalize Promart into one observation per exact SKU and seller."""
 
-    _validate_payload_identity(payload, source_url)
+    validate_vtex_payload_identity(
+        payload,
+        source_url,
+        normalize_product_url=normalize_promart_product_url,
+        display_name="Promart",
+        payload_error=PromartPayloadError,
+    )
     return parse_vtex_products(
         payload,
         source_url,
@@ -116,53 +113,6 @@ def parse_promart_products(
         observed_at,
         config=_PARSER_CONFIG,
     )
-
-
-def _validate_payload_identity(payload: Any, source_url: str) -> None:
-    if not isinstance(payload, list):
-        return
-    canonical_url = normalize_promart_product_url(source_url)
-    expected_slug = unquote(urlsplit(canonical_url).path).strip("/").rsplit("/", maxsplit=1)[0]
-    for index, product in enumerate(payload):
-        if not isinstance(product, Mapping):
-            continue
-        link_text = _optional_text(product.get("linkText"))
-        if link_text is None:
-            raise PromartPayloadError(
-                f"Product at index {index} is missing the Promart canonical slug."
-            )
-        observed_slug = unquote(link_text).strip("/").casefold()
-        if observed_slug != expected_slug.casefold():
-            raise PromartPayloadError(
-                f"Product at index {index} does not match the requested Promart slug."
-            )
-
-
-def _optional_text(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    normalized = " ".join(value.split())
-    return normalized or None
-
-
-def _positive_decimal(value: Any) -> Decimal | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        numeric = Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        return None
-    if not numeric.is_finite() or numeric <= 0:
-        return None
-    return numeric
-
-
-def _searchable_text(value: Any) -> str:
-    if not isinstance(value, str):
-        return ""
-    normalized = unicodedata.normalize("NFKD", value.casefold())
-    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
-    return " ".join(normalized.split())
 
 
 __all__ = [

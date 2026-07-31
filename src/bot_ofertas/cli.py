@@ -256,7 +256,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "curacao",
             "efe",
             "oechsle",
+            "plazavea",
             "promart",
+            "topitop",
+            "vega",
         ),
         help="Limita la ejecución a una tienda registrada.",
     )

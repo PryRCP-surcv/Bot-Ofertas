@@ -97,7 +97,10 @@ def test_builtin_adapters_declare_daily_bounded_sitemap_sources() -> None:
         "curacao",
         "efe",
         "oechsle",
+        "plazavea",
         "promart",
+        "topitop",
+        "vega",
     }
     for adapter in registry.adapters:
         assert len(adapter.discovery_sources) == 1

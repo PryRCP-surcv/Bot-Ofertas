@@ -6,8 +6,8 @@ ofertas excepcionales y posibles errores de precio sin realizar compras.
 
 ## Estado actual
 
-Las Fases 1, 2, 3, 4A, 4B, 4C, 5.1, 5.2 y 6.1 están implementadas para
-ejecución local y privada:
+Las Fases 1, 2, 3, 4A, 4B, 4C, 5.1, 5.2, 6.1 y la ampliación 6.2 están
+implementadas para ejecución local y privada:
 
 1. Se registra una URL pública de producto.
 2. El registro de tiendas reconoce el dominio, elige el adapter habilitado y
@@ -36,7 +36,7 @@ ejecución local y privada:
     estado de la API del estado real del rastreo.
 16. Docker mantiene PostgreSQL, API, worker, watchdog, respaldos y panel en
     segundo plano, con reinicio automático y logs rotados.
-17. Scrapy descubre progresivamente fichas desde los sitemaps oficiales de seis
+17. Scrapy descubre progresivamente fichas desde los sitemaps oficiales de nueve
     tiendas, con rotación, leases, deduplicación y límites diarios.
 18. Los candidatos requieren aprobación administrativa antes de convertirse en
     productos monitoreados.
@@ -51,11 +51,13 @@ La primera prueba de la Fase 1 guardó correctamente una barra de sonido a
 La validación viva de la Fase 2 guardó después una observación de Oechsle y otra
 de Promart, sin errores.
 
-Coolbox, Oechsle, Promart, Cassinelli, EFE y La Curacao están habilitadas.
-Promart opera como piloto de historial: sus alertas quedan bloqueadas hasta
-modelar una ubicación verificable. Cassinelli reutiliza el núcleo VTEX; EFE y
-La Curacao usan Product/Offer JSON-LD contrastado con el precio HTML. Cada
-tienda conserva política, dominio, vendedor, límites y pruebas propios.
+Coolbox, Oechsle, Promart, Cassinelli, EFE, La Curacao, plazaVea, Topitop y Vega
+están habilitadas. Promart, plazaVea y Vega solo alertan con vendedor propio y
+unidad fija, y recuerdan confirmar delivery para el distrito de Lima.
+Cassinelli reutiliza el núcleo VTEX; EFE y La Curacao usan Product/Offer
+JSON-LD contrastado con el precio HTML. Topitop conserva cada talla como SKU y
+variante independiente. Cada tienda mantiene política, dominio, vendedor,
+límites, fixtures y pruebas propios.
 
 El detector de Fase 3, la confirmación, la deduplicación, Telegram, el scheduler,
 la API de Fase 4A, el panel de Fase 4B y la operación local robusta de Fase 4C ya
@@ -200,11 +202,14 @@ logs y respaldos están en
 [Fase 4C: operación local económica](docs/phase4c-operations.md).
 El descubrimiento, sus límites y la revisión de candidatos están en
 [Fase 5.1: descubrimiento controlado](docs/phase5-discovery.md).
-La ampliación a seis tiendas y la audiencia beta están en
+La ampliación inicial a seis tiendas y la audiencia beta están en
 [Fase 5.2: nuevas tiendas y beta por Telegram](docs/phase5-2-expansion-beta.md).
 La administración de suscriptores, pagos externos, renovaciones y lista de
 lanzamiento está en
 [Fase 6.1: beta comercial controlada](docs/phase6-1-commercial-beta.md).
+La cobertura efectiva de Promart y Oechsle, y la incorporación de plazaVea,
+Topitop y Vega, están en
+[Fase 6.2: cobertura efectiva y nueve tiendas](docs/phase6-2-effective-coverage.md).
 
 Detener todo sin perder el historial:
 
@@ -358,11 +363,11 @@ La operación y límites actuales están en
 - Circuito persistente por tienda y backoff por producto después de fallos.
 - `User-Agent` propio y configurable.
 
-Coolbox, Oechsle, Promart, Cassinelli, EFE y La Curacao son los seis adapters
-habilitados; Promart construye historial, pero no alerta mientras su ubicación
-sea desconocida. plazaVea y Tottus quedan diferidas por ubicación y otras
-dimensiones comerciales; Hiraoka, Ripley, Tai Loy y Memory Kings no se integran
-bajo las condiciones revisadas. Consulta
+Coolbox, Oechsle, Promart, Cassinelli, EFE, La Curacao, plazaVea, Topitop y Vega
+son los nueve adapters habilitados. Marketplace, bases por peso o medida,
+identidad ambigua y variantes incompatibles continúan bloqueados. Tottus queda
+diferida por inestabilidad y ubicación; Hiraoka, Ripley, Tai Loy y Memory Kings
+no se integran bajo las condiciones revisadas. Consulta
 [la política de fuentes](docs/source-policy.md).
 
 La detección automática no significa scraping universal. Solo reconoce dominios
@@ -403,10 +408,12 @@ PC. No equivale todavía a un servicio público: el panel y la API solo escuchan
 en `localhost`, y la disponibilidad depende de que esa PC, Docker Desktop e
 Internet estén activos.
 
-La Fase 5.2 ya amplía el descubrimiento a seis tiendas y deja operativa una
-audiencia beta única de Telegram. La Fase 6.1 registra suscriptores, pagos
-externos, renovaciones, vencimientos y preparación del lanzamiento; las
-personas todavía se agregan y retiran manualmente del grupo. Los siguientes
-hitos son la prueba piloto, el despliegue permanente y, si la beta lo
-justifica, cobro y membresía automatizados. WhatsApp y correo podrán añadirse
-como canales sobre el mismo contrato de notificaciones.
+La Fase 6.2 amplía el descubrimiento a nueve tiendas y mejora la cobertura
+efectiva: evita gastar cupo en publicaciones de Oechsle cuyo único stock actual
+sea marketplace y permite alertas de Promart con un recordatorio explícito de
+delivery. La Fase 6.1 registra suscriptores, pagos externos, renovaciones,
+vencimientos y preparación del lanzamiento; las personas todavía se agregan y
+retiran manualmente del canal. Los siguientes hitos son medir esta ampliación
+durante el piloto, desplegar permanentemente y, si la beta lo justifica,
+automatizar cobro y membresía. WhatsApp y correo podrán añadirse como canales
+sobre el mismo contrato de notificaciones.

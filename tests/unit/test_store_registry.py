@@ -80,7 +80,17 @@ def test_builtin_registry_detects_and_normalizes_coolbox_urls() -> None:
     assert adapter.slug == "coolbox"
     assert canonical_url == "https://www.coolbox.pe/barra-sonido/p"
     assert registry.enabled_store_slugs == frozenset(
-        {"cassinelli", "coolbox", "curacao", "efe", "oechsle", "promart"}
+        {
+            "cassinelli",
+            "coolbox",
+            "curacao",
+            "efe",
+            "oechsle",
+            "plazavea",
+            "promart",
+            "topitop",
+            "vega",
+        }
     )
 
     oechsle, oechsle_url = registry.resolve(
@@ -115,6 +125,24 @@ def test_builtin_registry_detects_and_normalizes_coolbox_urls() -> None:
     )
     assert cassinelli_url == "https://www.cassinelli.com/porcelanato-demo/p"
     assert cassinelli.policy.max_targets_per_run == 10
+
+    plazavea, plazavea_url = registry.resolve(
+        "https://plazavea.com.pe/agua-demo/p?utm_source=test"
+    )
+    assert plazavea_url == "https://www.plazavea.com.pe/agua-demo/p"
+    assert plazavea.policy.max_targets_per_run == 5
+
+    topitop, topitop_url = registry.resolve(
+        "https://topitop.pe/casaca-demo/p#detalle"
+    )
+    assert topitop_url == "https://www.topitop.pe/casaca-demo/p"
+    assert topitop.policy.max_targets_per_run == 10
+
+    vega, vega_url = registry.resolve(
+        "https://vega.pe/gaseosa-demo/p?utm_source=test"
+    )
+    assert vega_url == "https://www.vega.pe/gaseosa-demo/p"
+    assert vega.policy.max_targets_per_run == 5
 
 
 def test_registry_resolves_registered_hosts_without_guessing() -> None:

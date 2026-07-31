@@ -286,7 +286,10 @@ def build_store_registry(*, include_plugins: bool = True) -> StoreRegistry:
     from bot_ofertas.stores.curacao import CuracaoAdapter
     from bot_ofertas.stores.efe import EfeAdapter
     from bot_ofertas.stores.oechsle import OechsleAdapter
+    from bot_ofertas.stores.plazavea import PlazaVeaAdapter
     from bot_ofertas.stores.promart import PromartAdapter
+    from bot_ofertas.stores.topitop import TopitopAdapter
+    from bot_ofertas.stores.vega import VegaAdapter
 
     registry = StoreRegistry(
         [
@@ -295,7 +298,10 @@ def build_store_registry(*, include_plugins: bool = True) -> StoreRegistry:
             CuracaoAdapter(),
             EfeAdapter(),
             OechsleAdapter(),
+            PlazaVeaAdapter(),
             PromartAdapter(),
+            TopitopAdapter(),
+            VegaAdapter(),
         ]
     )
     if not include_plugins:
