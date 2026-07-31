@@ -24,7 +24,7 @@ class OechsleAdapter(StoreAdapter):
             key="products-sitemap",
             url="https://www.oechsle.pe/sitemap.xml",
             max_candidates_per_run=75,
-            daily_approval_limit=20,
+            daily_approval_limit=40,
             active_product_limit=400,
             notes=(
                 "Índice oficial anunciado en robots.txt; se consulta solo un "

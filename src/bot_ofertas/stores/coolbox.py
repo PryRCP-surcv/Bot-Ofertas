@@ -24,7 +24,7 @@ class CoolboxAdapter(StoreAdapter):
             key="products-sitemap",
             url="https://www.coolbox.pe/sitemap.xml",
             max_candidates_per_run=100,
-            daily_approval_limit=20,
+            daily_approval_limit=40,
             active_product_limit=500,
             notes=(
                 "Índice oficial anunciado en robots.txt; se rota un sitemap "

@@ -106,5 +106,5 @@ def test_builtin_adapters_declare_daily_bounded_sitemap_sources() -> None:
         assert source.minimum_interval_minutes >= 1_440
         assert source.max_documents_per_run == 2
         assert source.max_candidates_per_run <= 100
-        assert source.daily_approval_limit == 20
+        assert source.daily_approval_limit == 40
         assert source.url_entry_filter in {"all", "has_image"}
