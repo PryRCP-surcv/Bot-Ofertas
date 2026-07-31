@@ -14,7 +14,7 @@ administrador usa el panel, mientras los suscriptores reciben alertas en un
 | La Curacao | Product/Offer JSON-LD + contraste HTML | 5 | 50 candidatos/día |
 
 Cada fuente se ejecuta como máximo una vez cada 24 horas, consulta el índice y
-un solo sitemap rotado, y admite 10 aprobaciones diarias con un máximo inicial
+un solo sitemap rotado, y admite 20 aprobaciones diarias con un máximo inicial
 de 300 productos activos. Estas cuotas son por tienda: añadir adapters no hace
 que una tienda consuma el presupuesto de otra.
 

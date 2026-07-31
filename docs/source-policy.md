@@ -78,9 +78,9 @@ integración permanezca activa.
 - Volumen: hasta 100 candidatos en Coolbox y 75 en Oechsle o Promart por
   ejecución; Cassinelli, EFE y La Curacao incorporan hasta 50 por ejecución.
   Un candidato repetido se actualiza, no se duplica.
-- Activación: manual desde el panel o la API, con 20 aprobaciones diarias para
-  Coolbox y 15 para Oechsle o Promart. Los máximos activos iniciales son 500,
-  400 y 400 respectivamente.
+- Activación: manual desde el panel o la API, con 20 aprobaciones diarias por
+  tienda. Los máximos activos iniciales siguen siendo 500 para Coolbox, 400
+  para Oechsle o Promart y 300 para Cassinelli, EFE o La Curacao.
 - Seguridad: solo HTTPS, mismo hostname revisado, sin credenciales, puertos
   alternativos, redirects externos, DTD ni entidades XML. Un 403, 429, 503,
   bloqueo o CAPTCHA pausa la tienda y no se intenta evadirlo.
@@ -94,7 +94,7 @@ integración permanezca activa.
 
 - Cassinelli acepta exclusivamente fichas `/slug/p` y usa su endpoint público
   VTEX. Opera con un intervalo mínimo de 60 minutos, hasta 10 productos por
-  corrida, 50 candidatos por descubrimiento y 10 aprobaciones diarias.
+  corrida, 50 candidatos por descubrimiento y 20 aprobaciones diarias.
 - EFE y La Curacao aceptan únicamente fichas raíz `producto.html`. Cada página
   debe contener exactamente un Product y un Offer JSON-LD que correspondan a
   la URL solicitada.

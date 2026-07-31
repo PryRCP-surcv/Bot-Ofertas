@@ -27,7 +27,7 @@ class CuracaoAdapter(StoreAdapter):
             key="catalog-sitemap",
             url="https://www.lacuracao.pe/media/sitemap/sitemap_curacao.xml",
             max_candidates_per_run=50,
-            daily_approval_limit=10,
+            daily_approval_limit=20,
             active_product_limit=300,
             child_path_pattern=r"^/media/sitemap/sitemap_curacao-\d+-\d+\.xml$",
             url_entry_filter="has_image",

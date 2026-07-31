@@ -27,7 +27,7 @@ class PromartAdapter(StoreAdapter):
             key="products-sitemap",
             url="https://www.promart.pe/sitemap.xml",
             max_candidates_per_run=75,
-            daily_approval_limit=15,
+            daily_approval_limit=20,
             active_product_limit=400,
             notes=(
                 "Índice oficial anunciado en robots.txt; los productos aprobados "
