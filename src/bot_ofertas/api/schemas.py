@@ -216,6 +216,7 @@ class ObservationRead(ApiModel):
     title: str
     brand: str | None
     model: str | None
+    image_url: str | None
     variant: dict[str, str]
     condition: str
     currency: str
@@ -429,15 +430,84 @@ class DiscoveryBulkReview(DiscoveryReview):
         return value
 
 
+class DistributionBucketRead(ApiModel):
+    key: str
+    label: str
+    count: int
+    percentage: Decimal
+
+
+class StoreCoverageRead(ApiModel):
+    store_slug: str
+    active_products: int
+    successful_products_24h: int
+    coverage_percent: Decimal
+    meets_target: bool
+
+
+class CatalogCoverageRead(ApiModel):
+    active_products: int = 0
+    successful_products_24h: int = 0
+    coverage_percent: Decimal = Decimal("0")
+    target_percent: Decimal = Decimal("95")
+    meets_target: bool = False
+    stores: list[StoreCoverageRead] = Field(default_factory=list)
+
+
+class AnalysisBacklogRead(ApiModel):
+    pending_observations: int = 0
+    oldest_observed_at: datetime | None = None
+    oldest_age_hours: Decimal = Decimal("0")
+    capacity_per_cycle: int = 1_000
+    estimated_cycles: int = 0
+    warning: bool = False
+
+
+class TelegramDestinationStatusRead(ApiModel):
+    channel: str
+    audience: Literal["free", "vip"]
+    dispatch_mode: Literal["immediate", "mirrored", "delayed"]
+    configured: bool
+    ready: bool
+    queue_counts: dict[str, int] = Field(default_factory=dict)
+    sent_24h: int
+    sent_7d: int
+    last_sent_at: datetime | None
+    last_error_at: datetime | None
+    last_error_code: str | None
+    last_error: str | None
+
+
+class DistributionConcentrationRead(ApiModel):
+    window_hours: int = 24
+    unique_alerts: int = 0
+    warning_threshold_percent: Decimal = Decimal("50")
+    dominant_category: str | None = None
+    dominant_category_label: str | None = None
+    dominant_category_percent: Decimal = Decimal("0")
+    warning: bool = False
+    categories: list[DistributionBucketRead] = Field(default_factory=list)
+    stores: list[DistributionBucketRead] = Field(default_factory=list)
+    uncategorized_catalog_products: int = 0
+
+
 class TelegramDistributionStatusRead(ApiModel):
     enabled: bool
     configured: bool
     ready: bool
-    audience_mode: Literal["single_chat"]
+    audience_mode: Literal["single_chat", "multi_destination"]
     membership_mode: Literal["manual"]
     payment_mode: Literal["manual_external"]
     automatic_offer_delivery: bool
     queue_counts: dict[str, int] = Field(default_factory=dict)
+    destinations: list[TelegramDestinationStatusRead] = Field(default_factory=list)
+    coverage: CatalogCoverageRead = Field(default_factory=CatalogCoverageRead)
+    analysis_backlog: AnalysisBacklogRead = Field(
+        default_factory=AnalysisBacklogRead
+    )
+    concentration: DistributionConcentrationRead = Field(
+        default_factory=DistributionConcentrationRead
+    )
     last_sent_at: datetime | None
     last_error_at: datetime | None
     last_error_code: str | None
@@ -445,6 +515,7 @@ class TelegramDistributionStatusRead(ApiModel):
 
 
 class TelegramTestRead(ApiModel):
+    destination: str = "telegram_free"
     status: Literal["sent", "failed", "disabled"]
     sent: bool
     message_id: str | None
@@ -693,6 +764,7 @@ class RuntimePolicyRead(ApiModel):
     changed_by: str | None = None
     change_reason: str | None = None
     detector_version: str
+    analysis_limit: int = 1_000
     scheduler_poll_seconds: int
     detection_history_limit: int
     detection_history_days: int
@@ -707,6 +779,7 @@ class RuntimePolicyRead(ApiModel):
     confirmation_price_tolerance_percent: Decimal
     confirmation_confidence_bonus: int
     minimum_alert_confidence: int
+    verified_list_price_alert_percent: Decimal
     good_deal_percent: Decimal
     exceptional_deal_percent: Decimal
     possible_price_error_percent: Decimal
@@ -719,11 +792,16 @@ class RuntimePolicyRead(ApiModel):
     telegram_configured: bool
     telegram_token_configured: bool
     telegram_chat_id_configured: bool
+    telegram_free_chat_id_configured: bool = False
+    telegram_vip_chat_id_configured: bool = False
+    telegram_operations_chat_id_configured: bool = False
+    telegram_vip_mirror_enabled: bool = True
 
 
 class RuntimePolicyPatch(ApiModel):
     model_config = ConfigDict(extra="forbid")
 
+    analysis_limit: int | None = Field(default=None, ge=100, le=5_000)
     scheduler_poll_seconds: int | None = Field(default=None, ge=30, le=86_400)
     detection_history_limit: int | None = Field(default=None, ge=3, le=10_000)
     detection_history_days: int | None = Field(default=None, ge=30, le=3_650)
@@ -746,6 +824,11 @@ class RuntimePolicyPatch(ApiModel):
         le=100,
     )
     minimum_alert_confidence: int | None = Field(default=None, ge=0, le=100)
+    verified_list_price_alert_percent: Decimal | None = Field(
+        default=None,
+        ge=0,
+        lt=100,
+    )
     alert_cooldown_hours: int | None = Field(default=None, ge=1, le=720)
     alert_significant_improvement_percent: Decimal | None = Field(
         default=None,
@@ -797,6 +880,8 @@ class RuntimePolicyPatch(ApiModel):
 
 
 __all__ = [
+    "AnalysisBacklogRead",
+    "CatalogCoverageRead",
     "ConfirmationRead",
     "CrawlJobCreate",
     "CrawlJobItemRead",
@@ -807,6 +892,8 @@ __all__ = [
     "DiscoveryReview",
     "DiscoveryRunRead",
     "DiscoverySourceRead",
+    "DistributionBucketRead",
+    "DistributionConcentrationRead",
     "HealthRead",
     "ObservationRead",
     "OfferRead",
@@ -819,6 +906,8 @@ __all__ = [
     "RuntimePolicyRead",
     "RuntimePolicyPatch",
     "StoreRead",
+    "StoreCoverageRead",
+    "TelegramDestinationStatusRead",
     "TelegramDistributionStatusRead",
     "TelegramTestRead",
 ]

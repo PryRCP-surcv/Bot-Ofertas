@@ -16,6 +16,7 @@ type EditableSetting = keyof RuntimePolicyPatch;
 type SettingsForm = Record<EditableSetting, string | boolean>;
 
 const editableFields: EditableSetting[] = [
+  "analysis_limit",
   "scheduler_poll_seconds",
   "detection_history_limit",
   "detection_history_days",
@@ -30,6 +31,7 @@ const editableFields: EditableSetting[] = [
   "confirmation_price_tolerance_percent",
   "confirmation_confidence_bonus",
   "minimum_alert_confidence",
+  "verified_list_price_alert_percent",
   "good_deal_percent",
   "exceptional_deal_percent",
   "possible_price_error_percent",
@@ -246,8 +248,10 @@ export function SettingsView({
             {settings.telegram_configured ? "configurado" : "incompleto"}
           </StatusPill>
           <small>
-            Token: {settings.telegram_token_configured ? "sí" : "no"} · Chat:{" "}
-            {settings.telegram_chat_id_configured ? "sí" : "no"}
+            Token: {settings.telegram_token_configured ? "sí" : "no"} · Free:{" "}
+            {settings.telegram_free_chat_id_configured ? "sí" : "no"} · VIP:{" "}
+            {settings.telegram_vip_chat_id_configured ? "sí" : "no"} · Operaciones:{" "}
+            {settings.telegram_operations_chat_id_configured ? "sí" : "no"}
           </small>
         </div>
       </section>
@@ -284,6 +288,16 @@ export function SettingsView({
             min={0}
             onChange={(value) => setValue("minimum_alert_confidence", value)}
             value={form.minimum_alert_confidence}
+          />
+          <NumberField
+            hint="Con dos lecturas estables, permite publicar aunque la única referencia sea el precio de lista."
+            label="Precio de lista verificado desde (%)"
+            max={99}
+            min={0}
+            onChange={(value) =>
+              setValue("verified_list_price_alert_percent", value)
+            }
+            value={form.verified_list_price_alert_percent}
           />
           <NumberField
             label="Muestras históricas mínimas"
@@ -351,6 +365,14 @@ export function SettingsView({
           description="Frecuencia del proceso, tamaño del historial y comparación entre equivalentes."
           title="Ejecución e historial"
         >
+          <NumberField
+            hint="Capacidad por ciclo. Las observaciones más recientes se procesan primero; reinicia el worker después de cambiarla."
+            label="Observaciones a analizar por ciclo"
+            max={5_000}
+            min={100}
+            onChange={(value) => setValue("analysis_limit", value)}
+            value={form.analysis_limit}
+          />
           <NumberField
             hint="Cambiar este valor requiere reiniciar bot-ofertas run."
             label="Consulta del scheduler (segundos)"

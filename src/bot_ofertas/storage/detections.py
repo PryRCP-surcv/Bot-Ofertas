@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Select, exists, func, select
+from sqlalchemy import Select, case, exists, func, select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from bot_ofertas.detection import (
     DealClassification,
@@ -23,6 +24,7 @@ from bot_ofertas.detection import (
     conditional_price_families,
 )
 from bot_ofertas.domain import Availability
+from bot_ofertas.notifications import NotificationRoute
 from bot_ofertas.storage.models import (
     DealDetection,
     EquivalentProductGroup,
@@ -41,6 +43,37 @@ _CLASSIFICATION_RANK = {
     DealClassification.POSSIBLE_PRICE_ERROR.value: 3,
 }
 _LEGACY_POLICY_FINGERPRINT = "0" * 64
+
+
+def _notification_routes(
+    *,
+    channel: str,
+    routes: Sequence[NotificationRoute] | None,
+) -> tuple[NotificationRoute, ...]:
+    if routes is None:
+        normalized_channel = channel.strip().casefold()
+        if not normalized_channel:
+            raise ValueError("channel must not be empty")
+        audience = "vip" if normalized_channel.endswith("_vip") else "free"
+        return (
+            NotificationRoute(
+                channel=normalized_channel,
+                provider="telegram",
+                audience=audience,
+                dispatch_mode="immediate",
+                routing_rule="explicit_single_destination",
+                routing_reason="destino único solicitado por el detector",
+            ),
+        )
+    if not routes or len(routes) > 10:
+        raise ValueError("routes must contain between one and ten destinations")
+    normalized = tuple(routes)
+    if not all(isinstance(route, NotificationRoute) for route in normalized):
+        raise TypeError("routes must contain NotificationRoute instances")
+    channels = [route.channel for route in normalized]
+    if len(channels) != len(set(channels)):
+        raise ValueError("routes must not repeat a channel")
+    return normalized
 
 
 def _normalized_policy_fingerprint(value: str) -> str:
@@ -229,6 +262,23 @@ class DetectionRepository:
             processed_filters.append(
                 DealDetection.policy_fingerprint == normalized_fingerprint
             )
+        newer_observation = aliased(PriceObservationRecord)
+        has_newer_snapshot = exists(
+            select(newer_observation.id).where(
+                newer_observation.tracked_product_id
+                == PriceObservationRecord.tracked_product_id,
+                newer_observation.observed_at
+                > PriceObservationRecord.observed_at,
+            )
+        )
+        latest_snapshot_priority = case(
+            (
+                PriceObservationRecord.tracked_product_id.is_not(None)
+                & ~has_newer_snapshot,
+                0,
+            ),
+            else_=1,
+        )
         statement: Select[tuple[PriceObservationRecord]] = (
             select(PriceObservationRecord)
             .where(
@@ -237,8 +287,9 @@ class DetectionRepository:
                 )
             )
             .order_by(
-                PriceObservationRecord.observed_at.asc(),
-                PriceObservationRecord.id.asc(),
+                latest_snapshot_priority.asc(),
+                PriceObservationRecord.observed_at.desc(),
+                PriceObservationRecord.id.desc(),
             )
             .limit(limit)
             .with_for_update(skip_locked=True)
@@ -428,6 +479,33 @@ class DetectionRepository:
                 return True
         return False
 
+    def is_variant_group_representative(
+        self,
+        observation: PriceObservationRecord,
+    ) -> bool:
+        """Choose one stable SKU for equal offers returned by the same page crawl."""
+
+        if observation.tracked_product_id is None:
+            return False
+        representative_id = self._session.scalar(
+            select(func.min(PriceObservationRecord.id)).where(
+                PriceObservationRecord.run_id == observation.run_id,
+                PriceObservationRecord.tracked_product_id
+                == observation.tracked_product_id,
+                PriceObservationRecord.external_product_id
+                == observation.external_product_id,
+                PriceObservationRecord.seller_id == observation.seller_id,
+                PriceObservationRecord.condition == observation.condition,
+                PriceObservationRecord.currency == observation.currency,
+                PriceObservationRecord.price == observation.price,
+                PriceObservationRecord.list_price == observation.list_price,
+                PriceObservationRecord.availability == observation.availability,
+                PriceObservationRecord.is_marketplace == observation.is_marketplace,
+                PriceObservationRecord.quality_flags == observation.quality_flags,
+            )
+        )
+        return representative_id == observation.id
+
     def tracked_product(
         self,
         observation: PriceObservationRecord,
@@ -471,8 +549,11 @@ class DetectionRepository:
         confirmation_price_tolerance_ratio: Decimal = Decimal("0.03"),
         confirmation_confidence_bonus: int = 20,
         minimum_alert_confidence: int = 50,
-        channel: str = "telegram",
+        verified_list_price_alert_ratio: Decimal = Decimal("0.35"),
+        channel: str = "telegram_free",
+        routes: Sequence[NotificationRoute] | None = None,
         allow_notification: bool = True,
+        allow_confirmation_state_change: bool | None = None,
         detected_at: datetime | None = None,
     ) -> DetectionSaveResult:
         normalized_version = detector_version.strip()
@@ -495,10 +576,17 @@ class DetectionRepository:
             raise ValueError("confirmation_confidence_bonus must be between 0 and 100")
         if not 0 <= minimum_alert_confidence <= 100:
             raise ValueError("minimum_alert_confidence must be between 0 and 100")
-        normalized_channel = channel.strip().lower()
-        if not normalized_channel:
-            raise ValueError("channel must not be empty")
+        if not Decimal("0") <= verified_list_price_alert_ratio < Decimal("1"):
+            raise ValueError(
+                "verified_list_price_alert_ratio must be between 0 and 1"
+            )
+        normalized_routes = _notification_routes(channel=channel, routes=routes)
         timestamp = _timestamp(self._session, detected_at)
+        confirmation_state_change = (
+            allow_notification
+            if allow_confirmation_state_change is None
+            else allow_confirmation_state_change
+        )
 
         existing = self._session.scalar(
             select(DealDetection).where(
@@ -541,7 +629,7 @@ class DetectionRepository:
             decision=decision,
             offer_key=offer_key,
             required=confirmation_required,
-            allow_state_change=allow_notification,
+            allow_state_change=confirmation_state_change,
             minimum_interval=confirmation_minimum_interval,
             max_age=confirmation_max_age,
             price_tolerance_ratio=confirmation_price_tolerance_ratio,
@@ -559,30 +647,52 @@ class DetectionRepository:
             "not_required",
         }
         confidence_gate_open = confidence_score >= minimum_alert_confidence
-        should_notify = False
+        list_price = _signal(decision, SignalKind.LIST_PRICE)
+        corroborating_deal_signal_present = any(
+            signal.kind is not SignalKind.LIST_PRICE
+            and signal.classification is not DealClassification.NONE
+            for signal in decision.signals
+        )
+        corroborated_confidence_gate_open = confidence_gate_open and (
+            corroborating_deal_signal_present or not confirmation_required
+        )
+        verified_list_price_gate_open = (
+            confirmation.status == "confirmed"
+            and list_price.eligible
+            and list_price.discount_ratio is not None
+            and list_price.discount_ratio >= verified_list_price_alert_ratio
+        )
+        publication_gate_open = (
+            corroborated_confidence_gate_open or verified_list_price_gate_open
+        )
+        reserved_routes: list[NotificationRoute] = []
         if allow_notification:
-            self._close_offer_episodes(
-                observation=observation,
-                offer_key=offer_key,
-                channel=normalized_channel,
-                timestamp=timestamp,
-                preserve_offer_key=offer_key if decision.should_alert else None,
-            )
+            for route in normalized_routes:
+                self._close_offer_episodes(
+                    observation=observation,
+                    offer_key=offer_key,
+                    channel=route.channel,
+                    timestamp=timestamp,
+                    preserve_offer_key=offer_key if decision.should_alert else None,
+                )
         if (
             decision.should_alert
             and allow_notification
             and confirmation_gate_open
-            and confidence_gate_open
+            and publication_gate_open
         ):
-            should_notify = self._reserve_notification(
-                observation=observation,
-                decision=decision,
-                offer_key=offer_key,
-                channel=normalized_channel,
-                cooldown=cooldown,
-                significant_improvement_ratio=significant_improvement_ratio,
-                timestamp=timestamp,
-            )
+            for route in normalized_routes:
+                if self._reserve_notification(
+                    observation=observation,
+                    decision=decision,
+                    offer_key=offer_key,
+                    channel=route.channel,
+                    cooldown=cooldown,
+                    significant_improvement_ratio=significant_improvement_ratio,
+                    timestamp=timestamp,
+                ):
+                    reserved_routes.append(route)
+        should_notify = bool(reserved_routes)
 
         primary = _primary_signal(decision)
         previous = _signal(decision, SignalKind.PREVIOUS_PRICE)
@@ -591,7 +701,6 @@ class DetectionRepository:
         median_90d = _signal(decision, SignalKind.MEDIAN_90D)
         historical_minimum = _signal(decision, SignalKind.HISTORICAL_MINIMUM)
         equivalent_median = _signal(decision, SignalKind.EQUIVALENT_MEDIAN)
-        list_price = _signal(decision, SignalKind.LIST_PRICE)
         notification_status = (
             "pending"
             if should_notify
@@ -658,6 +767,35 @@ class DetectionRepository:
                     "minimum_to_alert": minimum_alert_confidence,
                     "corroborating_signal_count": (decision.corroborating_signal_count),
                 },
+                "publication": {
+                    "gate": (
+                        "confidence"
+                        if corroborated_confidence_gate_open
+                        else "verified_list_price"
+                        if verified_list_price_gate_open
+                        else "closed"
+                    ),
+                    "corroborating_deal_signal_present": (
+                        corroborating_deal_signal_present
+                    ),
+                    "verified_list_price_threshold_ratio": str(
+                        verified_list_price_alert_ratio
+                    ),
+                    "verified_list_price_gate_open": verified_list_price_gate_open,
+                },
+                "routing": {
+                    "destinations": [
+                        {
+                            "channel": route.channel,
+                            "provider": route.provider,
+                            "audience": route.audience,
+                            "dispatch_mode": route.dispatch_mode,
+                            "routing_rule": route.routing_rule,
+                            "delay_seconds": int(route.delay.total_seconds()),
+                        }
+                        for route in reserved_routes
+                    ],
+                },
                 "confirmation": {
                     "status": confirmation.status,
                     "count": confirmation.count,
@@ -691,15 +829,29 @@ class DetectionRepository:
                 confirmation.previous_detection.confirmation_count = confirmation.count
                 confirmation.previous_detection.confirmation_observation_id = observation.id
                 confirmation.previous_detection.confirmed_at = timestamp
-        if should_notify:
+                if (
+                    confirmation.previous_detection.notification_status
+                    == "awaiting_confirmation"
+                ):
+                    confirmation.previous_detection.notification_status = "superseded"
+        for route in reserved_routes:
+            scheduled_for = timestamp + route.delay
             self._session.add(
                 NotificationDelivery(
                     detection_id=detection.id,
-                    channel=normalized_channel,
+                    channel=route.channel,
+                    provider=route.provider,
+                    audience=route.audience,
+                    dispatch_mode=route.dispatch_mode,
+                    routing_rule=route.routing_rule,
+                    routing_reason=route.routing_reason,
+                    routed_at=timestamp,
+                    scheduled_for=scheduled_for,
                     status="pending",
-                    next_attempt_at=timestamp,
+                    next_attempt_at=scheduled_for,
                 )
             )
+        if reserved_routes:
             self._session.flush()
         return DetectionSaveResult(
             detection=detection,
@@ -708,7 +860,9 @@ class DetectionRepository:
             confirmation_pending=confirmation.pending,
             confirmed=confirmation.confirmed,
             low_confidence_suppressed=(
-                decision.should_alert and confirmation_gate_open and not confidence_gate_open
+                decision.should_alert
+                and confirmation_gate_open
+                and not publication_gate_open
             ),
         )
 

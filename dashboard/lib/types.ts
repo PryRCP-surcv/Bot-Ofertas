@@ -157,6 +157,7 @@ export interface ObservationRead {
   title: string;
   brand: string | null;
   model: string | null;
+  image_url: string | null;
   variant: Record<string, string>;
   condition: string;
   currency: string;
@@ -421,7 +422,7 @@ export interface TelegramDistributionStatusRead {
   enabled: boolean;
   configured: boolean;
   ready: boolean;
-  audience_mode: "single_chat";
+  audience_mode: "single_chat" | "multi_destination";
   membership_mode: "manual";
   payment_mode: "manual_external";
   automatic_offer_delivery: boolean;
@@ -429,13 +430,82 @@ export interface TelegramDistributionStatusRead {
     "pending" | "retrying" | "sent" | "failed" | "superseded",
     number
   >;
+  destinations: TelegramDestinationStatusRead[];
+  coverage: CatalogCoverageRead;
+  analysis_backlog: AnalysisBacklogRead;
+  concentration: DistributionConcentrationRead;
   last_sent_at: ISODateTime | null;
   last_error_at: ISODateTime | null;
   last_error_code: string | null;
   last_error: string | null;
 }
 
+export interface AnalysisBacklogRead {
+  pending_observations: number;
+  oldest_observed_at: ISODateTime | null;
+  oldest_age_hours: DecimalValue;
+  capacity_per_cycle: number;
+  estimated_cycles: number;
+  warning: boolean;
+}
+
+export interface DistributionBucketRead {
+  key: string;
+  label: string;
+  count: number;
+  percentage: DecimalValue;
+}
+
+export interface StoreCoverageRead {
+  store_slug: string;
+  active_products: number;
+  successful_products_24h: number;
+  coverage_percent: DecimalValue;
+  meets_target: boolean;
+}
+
+export interface CatalogCoverageRead {
+  active_products: number;
+  successful_products_24h: number;
+  coverage_percent: DecimalValue;
+  target_percent: DecimalValue;
+  meets_target: boolean;
+  stores: StoreCoverageRead[];
+}
+
+export interface TelegramDestinationStatusRead {
+  channel: string;
+  audience: "free" | "vip";
+  dispatch_mode: "immediate" | "mirrored" | "delayed";
+  configured: boolean;
+  ready: boolean;
+  queue_counts: Record<
+    "pending" | "retrying" | "sent" | "failed" | "superseded",
+    number
+  >;
+  sent_24h: number;
+  sent_7d: number;
+  last_sent_at: ISODateTime | null;
+  last_error_at: ISODateTime | null;
+  last_error_code: string | null;
+  last_error: string | null;
+}
+
+export interface DistributionConcentrationRead {
+  window_hours: number;
+  unique_alerts: number;
+  warning_threshold_percent: DecimalValue;
+  dominant_category: string | null;
+  dominant_category_label: string | null;
+  dominant_category_percent: DecimalValue;
+  warning: boolean;
+  categories: DistributionBucketRead[];
+  stores: DistributionBucketRead[];
+  uncategorized_catalog_products: number;
+}
+
 export interface TelegramTestRead {
+  destination: string;
   status: "sent" | "failed" | "disabled";
   sent: boolean;
   message_id: string | null;
@@ -598,6 +668,7 @@ export interface RuntimePolicyRead {
   changed_by: string | null;
   change_reason: string | null;
   detector_version: string;
+  analysis_limit: number;
   scheduler_poll_seconds: number;
   detection_history_limit: number;
   detection_history_days: number;
@@ -612,6 +683,7 @@ export interface RuntimePolicyRead {
   confirmation_price_tolerance_percent: DecimalValue;
   confirmation_confidence_bonus: number;
   minimum_alert_confidence: number;
+  verified_list_price_alert_percent: DecimalValue;
   good_deal_percent: DecimalValue;
   exceptional_deal_percent: DecimalValue;
   possible_price_error_percent: DecimalValue;
@@ -624,9 +696,14 @@ export interface RuntimePolicyRead {
   telegram_configured: boolean;
   telegram_token_configured: boolean;
   telegram_chat_id_configured: boolean;
+  telegram_free_chat_id_configured: boolean;
+  telegram_vip_chat_id_configured: boolean;
+  telegram_operations_chat_id_configured: boolean;
+  telegram_vip_mirror_enabled: boolean;
 }
 
 export interface RuntimePolicyPatch {
+  analysis_limit?: number;
   scheduler_poll_seconds?: number;
   detection_history_limit?: number;
   detection_history_days?: number;
@@ -637,6 +714,7 @@ export interface RuntimePolicyPatch {
   confirmation_price_tolerance_percent?: DecimalValue;
   confirmation_confidence_bonus?: number;
   minimum_alert_confidence?: number;
+  verified_list_price_alert_percent?: DecimalValue;
   alert_cooldown_hours?: number;
   alert_significant_improvement_percent?: DecimalValue;
   notification_lease_seconds?: number;

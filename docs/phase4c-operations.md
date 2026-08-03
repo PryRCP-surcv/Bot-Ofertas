@@ -150,7 +150,10 @@ arranque. Es normal: su única tarea es actualizar la base de datos y terminar.
 
 ## Copias de seguridad
 
-El servicio `backup` crea un respaldo al arrancar y luego uno cada 24 horas.
+El servicio `backup` revisa cada cinco minutos si corresponde crear un respaldo
+y conserva los respaldos diarios en el volumen Docker `postgres_backups`. Si
+PostgreSQL se está reiniciando, reintenta sin detener el servicio. El volumen no
+depende del montaje WSL de la carpeta de Windows.
 Conserva 14 días de forma predeterminada. Los valores se pueden ajustar en
 `.env`:
 
@@ -177,6 +180,10 @@ Los archivos se guardan de forma predeterminada en:
 ```text
 backups\postgres\bot-ofertas-AAAAMMDD-HHMMSS.dump
 ```
+
+Esa ruta corresponde al respaldo manual exportado por el script. Los respaldos
+automáticos permanecen en el volumen Docker y se supervisan mediante la salud
+del servicio `backup`.
 
 El script:
 

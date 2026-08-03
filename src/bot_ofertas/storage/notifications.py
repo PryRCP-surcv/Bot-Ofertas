@@ -10,6 +10,9 @@ from uuid import UUID, uuid4
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
+from bot_ofertas.catalog_balance import BalanceEntry, balanced_indices, catalog_category
+from bot_ofertas.detection import canonicalize_variant
+from bot_ofertas.domain import Availability
 from bot_ofertas.storage.models import (
     DealDetection,
     NotificationDelivery,
@@ -55,6 +58,70 @@ def _condition_flags(value: object) -> tuple[str, ...]:
     return tuple(flags)
 
 
+def _variant_summary(
+    session: Session,
+    observation: PriceObservationRecord,
+) -> str | None:
+    """Summarize exact sibling variants sharing the representative offer."""
+
+    if observation.tracked_product_id is None:
+        return None
+    statement = select(PriceObservationRecord.variant).where(
+        PriceObservationRecord.run_id == observation.run_id,
+        PriceObservationRecord.tracked_product_id == observation.tracked_product_id,
+        PriceObservationRecord.external_product_id == observation.external_product_id,
+        PriceObservationRecord.seller_id == observation.seller_id,
+        PriceObservationRecord.condition == observation.condition,
+        PriceObservationRecord.currency == observation.currency,
+        PriceObservationRecord.price == observation.price,
+        PriceObservationRecord.list_price == observation.list_price,
+        PriceObservationRecord.availability == Availability.IN_STOCK,
+        PriceObservationRecord.is_marketplace.is_(False),
+        PriceObservationRecord.quality_flags == observation.quality_flags,
+    )
+    variants: set[tuple[tuple[str, str], ...]] = set()
+    for raw_variant in session.scalars(statement):
+        try:
+            canonical = canonicalize_variant(raw_variant)
+        except ValueError:
+            continue
+        if canonical:
+            variants.add(tuple(sorted(canonical.items())))
+    if len(variants) <= 1:
+        return None
+
+    ordered = sorted(variants)
+    keys = {tuple(key for key, _value in variant) for variant in ordered}
+    if len(keys) == 1 and len(next(iter(keys))) == 1:
+        key = next(iter(keys))[0]
+        values = sorted({variant[0][1] for variant in ordered})
+        visible = values[:12]
+        suffix = f" y {len(values) - len(visible)} más" if len(values) > len(visible) else ""
+        label = "Tallas disponibles" if key in {"talla", "size"} else f"{key.title()} disponibles"
+        return f"{label}: {', '.join(visible)}{suffix}"
+
+    formatted = [
+        ", ".join(f"{key.title()}={value}" for key, value in variant)
+        for variant in ordered[:8]
+    ]
+    suffix = f" y {len(ordered) - len(formatted)} más" if len(ordered) > len(formatted) else ""
+    return f"Disponibles: {'; '.join(formatted)}{suffix}"
+
+
+def _balance_entry(
+    observation: PriceObservationRecord,
+    tracked_label: str | None,
+) -> BalanceEntry:
+    return BalanceEntry(
+        store_slug=observation.store_slug,
+        category=catalog_category(
+            store_slug=observation.store_slug,
+            label=tracked_label or observation.title,
+            category_path=observation.category_path,
+        ),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class NotificationClaim:
     delivery_id: int
@@ -72,7 +139,16 @@ class NotificationClaim:
     store_slug: str
     confidence_score: int
     confirmation_count: int
+    channel: str = "telegram_free"
+    provider: str = "telegram"
+    audience: str = "free"
+    dispatch_mode: str = "immediate"
+    routing_rule: str = "explicit_single_destination"
+    routing_reason: str | None = None
+    scheduled_for: datetime | None = None
+    image_url: str | None = None
     condition_flags: tuple[str, ...] = ()
+    variant_summary: str | None = None
 
 
 class NotificationDeliveryRepository:
@@ -147,13 +223,58 @@ class NotificationDeliveryRepository:
                 ),
             )
             .order_by(
+                DealDetection.score.desc(),
                 NotificationDelivery.next_attempt_at.asc(),
                 NotificationDelivery.id.asc(),
             )
-            .limit(limit)
+            .limit(1_000)
             .with_for_update(of=NotificationDelivery, skip_locked=True)
         )
-        rows = self._session.execute(statement).all()
+        pool = self._session.execute(statement).all()
+        entries = [
+            _balance_entry(
+                observation,
+                tracked_label,
+            )
+            for _delivery, _detection, observation, tracked_label in pool
+        ]
+        recent_sent = [
+            _balance_entry(observation, tracked_label)
+            for observation, tracked_label in self._session.execute(
+                select(
+                    PriceObservationRecord,
+                    TrackedProduct.label,
+                )
+                .select_from(NotificationDelivery)
+                .join(
+                    DealDetection,
+                    DealDetection.id == NotificationDelivery.detection_id,
+                )
+                .join(
+                    PriceObservationRecord,
+                    PriceObservationRecord.id == DealDetection.observation_id,
+                )
+                .outerjoin(
+                    TrackedProduct,
+                    TrackedProduct.id == DealDetection.tracked_product_id,
+                )
+                .where(
+                    NotificationDelivery.channel == normalized_channel,
+                    NotificationDelivery.status == "sent",
+                    NotificationDelivery.sent_at >= timestamp - timedelta(hours=24),
+                )
+                .order_by(NotificationDelivery.sent_at.desc())
+                .limit(2_000)
+            )
+        ]
+        rows = [
+            pool[position]
+            for position in balanced_indices(
+                entries,
+                limit=limit,
+                initial_entries=recent_sent,
+            )
+        ]
         claims: list[NotificationClaim] = []
         for delivery, detection, observation, tracked_label in rows:
             if detection.current_price is None:
@@ -171,6 +292,13 @@ class NotificationDeliveryRepository:
                 NotificationClaim(
                     delivery_id=delivery.id,
                     lease_token=token,
+                    channel=delivery.channel,
+                    provider=delivery.provider,
+                    audience=delivery.audience,
+                    dispatch_mode=delivery.dispatch_mode,
+                    routing_rule=delivery.routing_rule,
+                    routing_reason=delivery.routing_reason,
+                    scheduled_for=delivery.scheduled_for,
                     detection_id=detection.id,
                     classification=detection.classification,
                     product_name=tracked_label or observation.title,
@@ -184,7 +312,9 @@ class NotificationDeliveryRepository:
                     store_slug=observation.store_slug,
                     confidence_score=detection.confidence_score,
                     confirmation_count=detection.confirmation_count,
+                    image_url=observation.image_url,
                     condition_flags=_condition_flags(observation.quality_flags),
+                    variant_summary=_variant_summary(self._session, observation),
                 )
             )
         self._session.flush()
@@ -201,6 +331,7 @@ class NotificationDeliveryRepository:
         retryable: bool = True,
         retry_after_seconds: int | None = None,
         provider_message_id: str | None = None,
+        delivery_method: str | None = None,
         error_code: str | None = None,
         error_detail: str | None = None,
         now: datetime | None = None,
@@ -213,6 +344,15 @@ class NotificationDeliveryRepository:
             raise TypeError("retryable must be a boolean")
         if retry_after_seconds is not None and retry_after_seconds <= 0:
             raise ValueError("retry_after_seconds must be positive")
+        normalized_delivery_method = _safe_text(delivery_method, maximum=32)
+        if normalized_delivery_method not in {
+            None,
+            "photo_url",
+            "photo_upload",
+            "text",
+            "text_fallback",
+        }:
+            raise ValueError("delivery_method is not supported")
         timestamp = _timestamp(self._session, now)
         delivery = self._session.scalar(
             select(NotificationDelivery)
@@ -237,12 +377,12 @@ class NotificationDeliveryRepository:
                 provider_message_id,
                 maximum=300,
             )
+            delivery.delivery_method = normalized_delivery_method
             delivery.last_error_code = None
             delivery.last_error = None
             delivery.sent_at = timestamp
-            detection.notification_status = "sent"
-            detection.notified_at = timestamp
         else:
+            delivery.delivery_method = None
             exhausted = not retryable or delivery.attempt_count >= max_attempts
             delivery.status = "failed" if exhausted else "retrying"
             delivery.last_error_code = _safe_text(error_code, maximum=100)
@@ -257,7 +397,7 @@ class NotificationDeliveryRepository:
                         86_400,
                     )
                 delivery.next_attempt_at = timestamp + timedelta(seconds=retry_seconds)
-            detection.notification_status = "failed" if exhausted else "retrying"
+        self._refresh_detection_status(detection)
         self._session.flush()
         return True
 
@@ -285,6 +425,7 @@ class NotificationDeliveryRepository:
             )
             .with_for_update(of=NotificationDelivery, skip_locked=True)
         ).all()
+        touched_detections: dict[int, DealDetection] = {}
         for delivery, detection in rows:
             delivery.status = "failed"
             delivery.lease_token = None
@@ -294,7 +435,9 @@ class NotificationDeliveryRepository:
                 delivery.last_error or "La entrega agotó sus intentos después de perder un lease."
             )
             delivery.updated_at = now
-            detection.notification_status = "failed"
+            touched_detections[detection.id] = detection
+        for detection in touched_detections.values():
+            self._refresh_detection_status(detection)
         self._session.flush()
         return len(rows)
 
@@ -319,6 +462,36 @@ class NotificationDeliveryRepository:
         delivery.attempt_count = max(0, delivery.attempt_count - 1)
         self._session.flush()
         return True
+
+    def _refresh_detection_status(
+        self,
+        detection: DealDetection,
+    ) -> None:
+        deliveries = list(
+            self._session.scalars(
+                select(NotificationDelivery).where(
+                    NotificationDelivery.detection_id == detection.id
+                )
+            )
+        )
+        statuses = {delivery.status for delivery in deliveries}
+        sent_times = [
+            delivery.sent_at
+            for delivery in deliveries
+            if delivery.status == "sent" and delivery.sent_at is not None
+        ]
+        if "pending" in statuses:
+            detection.notification_status = "pending"
+        elif "retrying" in statuses:
+            detection.notification_status = "retrying"
+        elif "sent" in statuses:
+            detection.notification_status = "sent"
+        elif "failed" in statuses:
+            detection.notification_status = "failed"
+        elif statuses and statuses == {"superseded"}:
+            detection.notification_status = "superseded"
+        if sent_times:
+            detection.notified_at = max(sent_times)
 
 
 def _comparison(detection: DealDetection) -> tuple[str, Decimal | None]:

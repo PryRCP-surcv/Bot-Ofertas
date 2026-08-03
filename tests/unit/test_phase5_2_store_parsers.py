@@ -39,6 +39,10 @@ def _magento_html(
                 "name": "Cafetera Thomas 12TZS TH-138I",
                 "sku": "CF-TH138IN",
                 "url": url,
+                "image": {
+                    "@type": "ImageObject",
+                    "contentUrl": "https://cdn.example.pe/cafetera-thomas.jpg",
+                },
                 "brand": {"@type": "Brand", "name": "Thomas"},
                 "offers": {
                     "@type": "Offer",
@@ -92,6 +96,7 @@ def test_efe_jsonld_parser_preserves_exact_product_seller_and_prices() -> None:
     assert observation.list_price == Decimal("159.00")
     assert observation.currency == "PEN"
     assert observation.category_path == ["Electrohogar", "Cafeteras"]
+    assert observation.image_url == "https://cdn.example.pe/cafetera-thomas.jpg"
     assert observation.quality_flags == []
 
 
@@ -169,6 +174,11 @@ def test_cassinelli_uses_public_vtex_and_flags_variable_measure_basis() -> None:
                 {
                     "itemId": "sku-100",
                     "nameComplete": "Porcelanato Demo Gris",
+                    "images": [
+                        {
+                            "imageUrl": "https://cdn.cassinelli.com/porcelanato-demo.jpg",
+                        }
+                    ],
                     "sellers": [
                         {
                             "sellerId": "1",
@@ -199,4 +209,5 @@ def test_cassinelli_uses_public_vtex_and_flags_variable_measure_basis() -> None:
     assert observation.store_slug == "cassinelli"
     assert observation.is_marketplace is False
     assert observation.price == Decimal("49")
+    assert observation.image_url == "https://cdn.cassinelli.com/porcelanato-demo.jpg"
     assert "variable_measure_price_basis" in observation.quality_flags

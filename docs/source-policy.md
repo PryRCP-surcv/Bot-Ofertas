@@ -1,6 +1,6 @@
 # Política de fuentes
 
-Última revisión: 30 de julio de 2026.
+Última revisión: 3 de agosto de 2026.
 
 Este proyecto solo consulta recursos públicos para observar precios; no inicia
 sesión, no agrega productos al carrito y no realiza compras. Cada dominio
@@ -20,14 +20,18 @@ integración permanezca activa.
 - Para observar precios, consultar únicamente fichas HTTPS que ya estén en
   `tracked_products`.
 - Para descubrir candidatos, usar solo fuentes declaradas por el adapter y
-  revisadas en esta política. En Fase 5.2 se admiten exclusivamente los
-  sitemaps oficiales de Coolbox, Oechsle, Promart, Cassinelli, EFE,
-  La Curacao, plazaVea, Topitop y Vega.
+  revisadas en esta política. Están admitidos exclusivamente los sitemaps
+  oficiales de Coolbox, Oechsle, Promart, Cassinelli, EFE, La Curacao,
+  plazaVea, Topitop, Vega, Estilos, Metro, Tottus, Wong, Footloose, Casaideas
+  y Falabella.
 - No usar búsquedas ni categorías. Cada ejecución de descubrimiento consulta
   como máximo el índice, `robots.txt` cuando corresponda y un sitemap de
   productos rotado; nunca recorre todos los archivos de una tienda a la vez.
 - Mantener los candidatos inactivos hasta aprobación administrativa. Descubrir
   una URL no consulta su precio ni la incorpora automáticamente al monitoreo.
+- En ampliaciones masivas, priorizar primero tiendas con menor cobertura y luego
+  categorías comerciales subrepresentadas. Este orden no crea cuotas de
+  publicación ni vuelve elegible una observación inválida.
 - No visitar login, cuenta, carrito, checkout ni endpoints privados.
 - Mantener una sola solicitud concurrente por dominio, pausas conservadoras y
   `AutoThrottle`.
@@ -55,7 +59,7 @@ integración permanezca activa.
 
 ## Estado de tiendas evaluadas
 
-| Tienda | Estado al 2026-07-30 | Evidencia y decisión |
+| Tienda | Estado al 2026-07-31 | Evidencia y decisión |
 |---|---|---|
 | Coolbox | Piloto y descubrimiento habilitados | Su [`robots.txt`](https://www.coolbox.pe/robots.txt) permite expresamente `/api/catalog_system/pub/` y anuncia el [sitemap](https://www.coolbox.pe/sitemap.xml). Las fichas y el catálogo público VTEX responden sin login. Sus [términos](https://www.coolbox.pe/terminos-y-condiciones) contemplan marketplace, condiciones por medio de pago y errores tipográficos. |
 | Oechsle | Piloto y descubrimiento habilitados | Su [`robots.txt`](https://www.oechsle.pe/robots.txt) bloquea checkout y publica un [sitemap](https://www.oechsle.pe/sitemap.xml), sin bloquear las fichas `/p` ni el catálogo público usado por el adapter. Sus [términos](https://www.oechsle.pe/terminos-y-condiciones) advierten variaciones de precio, marketplace y promociones o cuotas con Tarjeta Oh!. Las pruebas, un rastreo vivo controlado de una ficha y la primera vuelta acotada de descubrimiento pasaron entre el 28 y 29 de julio de 2026. |
@@ -66,37 +70,95 @@ integración permanezca activa.
 | plazaVea | Piloto de unidad fija y descubrimiento habilitados | Su [`robots.txt`](https://www.plazavea.com.pe/robots.txt) publica el [sitemap oficial](https://www.plazavea.com.pe/sitemap.xml) y separa rutas privadas del catálogo público. Sus [términos](https://www.plazavea.com.pe/terminos-y-condiciones) contemplan ubicación, productos por peso y marketplace. El adapter solo considera elegible `sellerId=1` junto con `Plaza Vea`, `measurementUnit` unitaria y `unitMultiplier=1`; el resto se conserva, pero bloquea la alerta. El smoke test del 30 de julio guardó una ficha pública en PEN y stock propio. |
 | Topitop | Piloto y descubrimiento habilitados | Su [`robots.txt`](https://www.topitop.pe/robots.txt) publica el [sitemap oficial](https://www.topitop.pe/sitemap.xml) y excluye cuenta y checkout. La [tienda pública](https://www.topitop.pe/) expone catálogo VTEX con SKU por talla. El adapter exige `sellerId=1` junto con `TRADING FASHION LINE S.A.` y conserva cada talla como variante separada. El smoke test del 30 de julio guardó cuatro tallas en PEN y stock propio. |
 | Vega | Piloto de unidad fija y descubrimiento habilitados | Su [`robots.txt`](https://www.vega.pe/robots.txt) publica el [sitemap oficial](https://www.vega.pe/sitemap.xml) y excluye cuenta, login, búsqueda y checkout. Sus [términos](https://www.vega.pe/terminos-y-condiciones-generales) cubren la venta online. El adapter exige `sellerId=1` junto con `CORPORACIÓN VEGA`, unidad fija y confirmación visible de delivery. El smoke test del 30 de julio guardó una ficha pública en PEN y stock propio. |
-| Tottus | Diferida | Su [`robots.txt`](https://www.tottus.com.pe/robots.txt) distingue fichas y rutas privadas, pero el sitemap revisado respondió de forma inestable y el catálogo depende de ubicación. No se fuerza la integración ni se intenta eludir esa indisponibilidad. |
+| Estilos | Piloto y descubrimiento habilitados | Su [`robots.txt`](https://www.estilos.com.pe/robots.txt) separa rutas privadas y anuncia el [sitemap oficial](https://www.estilos.com.pe/sitemap.xml). El catálogo público VTEX expone SKU, vendedor, unidad, precio y stock. El adapter exige simultáneamente `sellerId=1` y `ESTILOS PERU`; una entrega concreta debe confirmarse según ubicación. El smoke test del 31 de julio normalizó una ficha pública sin login. |
+| Metro | Piloto de unidad fija y descubrimiento habilitados | Su [`robots.txt`](https://www.metro.pe/robots.txt) excluye cuenta, login, checkout y vista rápida, y anuncia el [sitemap oficial](https://www.metro.pe/sitemap.xml). Sus [términos](https://www.metro.pe/institucional/terminos-y-condiciones/) regulan la venta pública de Metro.pe y Wong.pe. El adapter exige `sellerId=1` junto con `CENCOSUD RETAIL PERU S.A.`, unidad fija y confirmación de delivery. El smoke test del 31 de julio verificó precio actual/lista, PEN y stock propio. |
+| Tottus | Piloto y descubrimiento habilitados | Su [`robots.txt`](https://www.tottus.com.pe/robots.txt) excluye cuenta y checkout y anuncia un [índice PDP oficial](https://www.tottus.com.pe/static/site/sitemaps/pdp/pdp_pe_TO_COM-index.xml). La ficha pública expone producto, variante, vendedor, precio normal/oferta y stock en `__NEXT_DATA__`, contrastados con Product/Offer JSON-LD. El adapter exige coincidencia exacta de producto, SKU, vendedor, moneda y disponibilidad. El smoke test del 31 de julio verificó una ficha pública en PEN sin seleccionar ubicación ni iniciar sesión. |
+| Wong | Piloto de unidad fija y descubrimiento habilitados | Su [`robots.txt`](https://www.wong.pe/robots.txt) separa rutas privadas y anuncia el [sitemap oficial](https://www.wong.pe/sitemap.xml). Sus [términos](https://www.wong.pe/institucional/terminos-y-condiciones) cubren la tienda online. El adapter exige `sellerId=1` junto con `WongIO`, unidad fija y moneda PEN; además conserva el recordatorio de delivery. El smoke test del 31 de julio normalizó una ficha pública con vendedor y precio verificados. |
+| Footloose | Piloto y descubrimiento habilitados | Su [`robots.txt`](https://www.footloose.pe/robots.txt) separa rutas privadas y publica el [sitemap oficial](https://www.footloose.pe/sitemap.xml). Sus [términos](https://www.footloose.pe/terminos-y-condiciones) cubren la venta online. El adapter exige `sellerId=1` junto con `Inversiones Rubin's SAC` y conserva cada talla como SKU independiente. El smoke test del 31 de julio verificó variantes, precio actual/lista, PEN y stock propio. |
+| Casaideas | Piloto de unidad fija y descubrimiento habilitados | Su [`robots.txt`](https://www.casaideas.com.pe/robots.txt) separa rutas privadas y publica el [sitemap oficial](https://www.casaideas.com.pe/sitemap.xml). Sus [términos](https://www.casaideas.com.pe/terminos-y-condiciones) cubren la venta online. El adapter exige `sellerId=1` junto con `Casaideas Perú`, unidad fija y moneda PEN; además conserva el recordatorio de delivery. El smoke test del 31 de julio verificó una ficha pública sin login ni carrito. |
+| Falabella | Piloto de venta directa y descubrimiento habilitados | Su [`robots.txt`](https://www.falabella.com.pe/robots.txt) anuncia el [índice PDP oficial](https://www.falabella.com.pe/static/site/sitemaps/pdp/pdp_pe_FA_COM-index.xml); también se revisaron sus [términos de acceso y uso](https://www.falabella.com.pe/falabella-pe/page/terminos-y-condiciones). La ficha pública expone producto, variante, vendedor, precios, stock e imagen en `__NEXT_DATA__`, contrastados con Product/Offer JSON-LD. El adapter exige el SKU exacto, PEN y la identidad simultánea `sellerId=FALABELLA_PERU` y `sellerName=FALABELLA`. Marketplace se registra, pero no puede alertar; el precio CMR se conserva como condición informativa. El smoke test del 3 de agosto verificó una ficha directa sin login, cuenta, carrito ni checkout. |
 | Hiraoka | No integrar | Su [`robots.txt`](https://hiraoka.com.pe/robots.txt) bloquea expresamente `User-agent: Scrapy`; además, sus [términos](https://hiraoka.com.pe/terminos-y-condiciones) restringen la extracción y reutilización del sitio. |
 | Ripley | No integrar | La consulta directa incluso de su [`robots.txt`](https://simple.ripley.com.pe/robots.txt) recibió una página de bloqueo del perímetro. Sus [términos oficiales](https://simple.ripley.com.pe/minisitios/especial/servicio-al-cliente/terminos-condiciones/index.html) también describen Mercado Ripley y precios variables. No se intentará evadir el bloqueo. |
 | Tai Loy | No integrar | Su [`robots.txt`](https://www.tailoy.com.pe/robots.txt) solo declara agentes concretos y publica un sitemap; no ofrece una autorización general. Sus [términos](https://www.tailoy.com.pe/terminos-y-condiciones) restringen reproducción, puesta a disposición y reutilización sin autorización escrita. |
 | Memory Kings | No integrar | Su [`robots.txt`](https://www.memorykings.pe/robots.txt) bloquea expresamente varios agentes de IA y no se localizó una página oficial de términos generales de uso entre los enlaces públicos revisados. La [política de datos](https://www.memorykings.pe/ley-proteccion-datos) no sustituye esa autorización. No se integrará sin aclaración escrita. |
+| Sodimac | No integrar | Su [`robots.txt`](https://sodimac.falabella.com.pe/robots.txt) bloquea expresamente `/product/`, que es la ruta de sus fichas. No se consultarán esas páginas ni se intentará evadir la restricción. |
 
-## Descubrimiento controlado de Fases 5.1 y 5.2
+## Descubrimiento controlado
 
-- Fuentes activas: los nueve índices oficiales ya citados.
+- Fuentes activas: los dieciséis índices oficiales ya citados.
 - Frecuencia mínima: una vuelta por fuente cada 1.440 minutos.
 - Presupuesto por vuelta: dos documentos de sitemap como máximo, además de la
   comprobación de `robots.txt` realizada por Scrapy.
 - Rotación: el índice selecciona un único archivo cuyo path coincida
   exactamente con `/sitemap/product-N.xml`; el cursor persistente continúa con
   otro archivo en la siguiente vuelta.
-- Volumen: hasta 100 candidatos en Coolbox y 75 en Oechsle o Promart por
-  ejecución; Cassinelli, EFE, La Curacao, plazaVea, Topitop y Vega incorporan
-  hasta 50 por ejecución. Un candidato repetido se actualiza, no se duplica.
+- Volumen: hasta 100 candidatos en Coolbox o Falabella; 75 en Oechsle, Promart, Estilos,
+  Metro, Tottus, Wong, Footloose o Casaideas; y 50 en Cassinelli, EFE,
+  La Curacao, plazaVea, Topitop o Vega por ejecución. Un candidato repetido se
+  actualiza, no se duplica.
 - Activación: manual desde el panel o la API, con 40 aprobaciones diarias por
-  tienda. Los máximos activos iniciales siguen siendo 500 para Coolbox, 400
-  para Oechsle o Promart y 300 para Cassinelli, EFE, La Curacao, plazaVea,
-  Topitop o Vega.
+  tienda y una cuota piloto de 20 para Falabella. El máximo técnico de
+  Estilos, Metro, Tottus, Wong, Footloose y
+  Casaideas es 500 fichas activas por tienda; no obliga a alcanzar ese máximo
+  ni sustituye el objetivo global. Falabella comienza con un máximo técnico
+  de 300 fichas activas.
+- Equilibrio: cada ampliación recalcula el catálogo activo. La tienda y categoría
+  con menor representación se atienden primero; las siguientes ejecuciones
+  continúan corrigiendo el balance en vez de repetir una distribución fija.
 - Seguridad: solo HTTPS, mismo hostname revisado, sin credenciales, puertos
   alternativos, redirects externos, DTD ni entidades XML. Un 403, 429, 503,
   bloqueo o CAPTCHA pausa la tienda y no se intenta evadirlo.
-- Promart, plazaVea y Vega conservan `delivery_location_confirmation`: no
+- Promart, plazaVea, Vega, Estilos, Metro, Wong, Casaideas y Falabella conservan
+  `delivery_location_confirmation`: no
   bloquea una oferta válida, pero obliga a que Telegram recuerde confirmar
   disponibilidad y delivery para el distrito de Lima.
 - Los sitemaps Magento de EFE y La Curacao mezclan categorías y productos. El
   parser solo toma entradas que incluyen la extensión estándar `image:image`;
   después el adapter vuelve a exigir una ficha raíz `.html` exacta.
+
+## Alcance de Wong, Footloose y Casaideas
+
+- Las tres tiendas aceptan exclusivamente fichas HTTPS canónicas terminadas en
+  `/p` y usan fuentes públicas VTEX.
+- Cada una conserva adapter, dominio, sitemap, spider, identidad de vendedor,
+  límites y pruebas independientes.
+- Wong exige `sellerId=1` junto con `WongIO`; Footloose exige `sellerId=1` junto
+  con `Inversiones Rubin's SAC`; Casaideas exige `sellerId=1` junto con
+  `Casaideas Perú`. Una coincidencia parcial genera identidad ambigua bloqueante.
+- Wong y Casaideas solo permiten `measurementUnit` unitaria y
+  `unitMultiplier=1`. Además, una oferta válida conserva
+  `delivery_location_confirmation` para recordar la comprobación del distrito.
+- Footloose mantiene cada talla como SKU y variante independiente. Una talla no
+  puede confirmar ni comparar silenciosamente el precio de otra. Desde la Fase
+  6.6, si varias tallas confirman por separado exactamente el mismo precio,
+  vendedor, condición y condiciones comerciales, Telegram las agrupa en una
+  única notificación.
+- Operan en PEN, con intervalo mínimo de 60 minutos y hasta 10 fichas por tienda
+  en una misma vuelta. Descubren hasta 75 candidatos por fuente, conservan 40
+  aprobaciones técnicas diarias y un máximo técnico de 500 productos activos
+  por tienda.
+- Los smoke tests del 31 de julio de 2026 verificaron fichas públicas sin login,
+  cuenta, carrito, checkout ni CAPTCHA.
+
+## Alcance de Estilos, Metro y Tottus
+
+- Estilos y Metro reutilizan el parser VTEX, pero mantienen dominio, seller,
+  sitemap, spider, límites y pruebas independientes.
+- Metro solo permite `measurementUnit` unitaria y `unitMultiplier=1`; productos
+  por kilogramo, peso aproximado o multiplicador distinto se guardan con
+  `unsupported_price_basis` y no generan alertas.
+- Estilos exige `sellerId=1` junto con `ESTILOS PERU`; Metro exige `sellerId=1`
+  junto con `CENCOSUD RETAIL PERU S.A.`. Una mitad de la identidad sin la otra
+  genera un flag bloqueante.
+- Tottus no reutiliza selectores de otra tienda. El parser exige que
+  `__NEXT_DATA__` y JSON-LD coincidan en producto, SKU, precio, vendedor,
+  disponibilidad y moneda PEN. Conserva la variante exacta y separa el precio
+  tachado del precio vigente.
+- Las tres tiendas operan con intervalo mínimo de 60 minutos y hasta 10 fichas
+  por tienda en una misma vuelta. Descubren hasta 75 candidatos por fuente y
+  conservan 40 aprobaciones técnicas diarias.
+- La comprobación viva del 31 de julio de 2026 validó una ficha pública de cada
+  tienda sin login, cuenta, carrito, checkout, CAPTCHA ni selección de compra.
 
 ## Alcance de las tiendas incorporadas en Fase 5.2
 
@@ -174,6 +236,8 @@ vendedor, dominio, spider, límites, fixtures y pruebas independientes:
   `CORPORACIÓN VEGA`.
 - Topitop exige `sellerId=1` y `TRADING FASHION LINE S.A.`. Cada talla queda
   separada por SKU y variante, por lo que no se mezclan tallas al comparar.
+  Puede agrupar únicamente la presentación de tallas que hayan conservado el
+  mismo precio y condiciones; sus historiales y confirmaciones siguen separados.
 - Los vendedores terceros se guardan como marketplace, pero el detector los
   excluye. Un ID propio con nombre no revisado, o viceversa, genera un flag de
   identidad ambiguo bloqueante.

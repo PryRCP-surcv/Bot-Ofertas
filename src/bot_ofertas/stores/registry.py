@@ -281,27 +281,41 @@ def _plugin_adapter(loaded: object) -> StoreAdapter:
 def build_store_registry(*, include_plugins: bool = True) -> StoreRegistry:
     """Build the built-in registry and optionally add installed adapter plugins."""
 
+    from bot_ofertas.stores.casaideas import CasaideasAdapter
     from bot_ofertas.stores.cassinelli import CassinelliAdapter
     from bot_ofertas.stores.coolbox import CoolboxAdapter
     from bot_ofertas.stores.curacao import CuracaoAdapter
     from bot_ofertas.stores.efe import EfeAdapter
+    from bot_ofertas.stores.estilos import EstilosAdapter
+    from bot_ofertas.stores.falabella import FalabellaAdapter
+    from bot_ofertas.stores.footloose import FootlooseAdapter
+    from bot_ofertas.stores.metro import MetroAdapter
     from bot_ofertas.stores.oechsle import OechsleAdapter
     from bot_ofertas.stores.plazavea import PlazaVeaAdapter
     from bot_ofertas.stores.promart import PromartAdapter
     from bot_ofertas.stores.topitop import TopitopAdapter
+    from bot_ofertas.stores.tottus import TottusAdapter
     from bot_ofertas.stores.vega import VegaAdapter
+    from bot_ofertas.stores.wong import WongAdapter
 
     registry = StoreRegistry(
         [
             CassinelliAdapter(),
+            CasaideasAdapter(),
             CoolboxAdapter(),
             CuracaoAdapter(),
             EfeAdapter(),
+            EstilosAdapter(),
+            FalabellaAdapter(),
+            FootlooseAdapter(),
+            MetroAdapter(),
             OechsleAdapter(),
             PlazaVeaAdapter(),
             PromartAdapter(),
             TopitopAdapter(),
+            TottusAdapter(),
             VegaAdapter(),
+            WongAdapter(),
         ]
     )
     if not include_plugins:

@@ -713,8 +713,12 @@ def telegram_distribution(
 def test_telegram_distribution(
     session: SessionDependency,
     _admin: AdminDependency,
+    destination: Annotated[
+        Literal["telegram_free", "telegram_vip"],
+        Query(),
+    ] = "telegram_free",
 ) -> TelegramTestRead:
-    return send_telegram_beta_test(session)
+    return send_telegram_beta_test(session, destination=destination)
 
 
 @api_router.get(

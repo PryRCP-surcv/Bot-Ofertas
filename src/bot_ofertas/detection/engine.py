@@ -141,7 +141,7 @@ class SignalThresholds:
     """
 
     good_deal: Decimal = Decimal("0.20")
-    exceptional_deal: Decimal = Decimal("0.40")
+    exceptional_deal: Decimal = Decimal("0.35")
     possible_price_error: Decimal = Decimal("0.70")
 
     def __post_init__(self) -> None:

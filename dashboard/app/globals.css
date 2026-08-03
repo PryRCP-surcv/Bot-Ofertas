@@ -2852,7 +2852,7 @@ code {
 
 .distribution-metrics {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 14px;
 }
 
@@ -2884,10 +2884,133 @@ code {
   background: rgba(180, 67, 48, 0.06);
 }
 
+.distribution-destinations {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.destination-card {
+  padding-bottom: 22px;
+}
+
+.destination-card dl {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0 24px 20px;
+}
+
+.destination-card dl > div {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.destination-card dt {
+  color: var(--muted);
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.destination-card dd {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.destination-card > .button {
+  margin-left: 24px;
+}
+
 .distribution-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.75fr);
   gap: 18px;
+}
+
+.distribution-breakdown {
+  padding-bottom: 22px;
+}
+
+.distribution-bars {
+  display: grid;
+  gap: 14px;
+  padding: 0 24px;
+}
+
+.distribution-bar > div,
+.coverage-row > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.distribution-bar strong,
+.coverage-row strong {
+  font-size: 0.72rem;
+  text-transform: capitalize;
+}
+
+.distribution-bar span,
+.coverage-row span {
+  color: var(--muted);
+  font-size: 0.64rem;
+}
+
+.distribution-bar progress {
+  width: 100%;
+  height: 8px;
+  margin-top: 7px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: var(--paper-muted);
+}
+
+.distribution-bar progress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: var(--paper-muted);
+}
+
+.distribution-bar progress::-webkit-progress-value {
+  border-radius: 999px;
+  background: var(--coral);
+}
+
+.distribution-bar progress::-moz-progress-bar {
+  border-radius: 999px;
+  background: var(--coral);
+}
+
+.coverage-list {
+  display: grid;
+  max-height: 470px;
+  overflow: auto;
+  padding: 0 24px;
+}
+
+.coverage-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 0;
+  border-top: 1px solid var(--line);
+}
+
+.distribution-note,
+.muted-copy {
+  margin: 16px 24px 0;
+  color: var(--muted);
+  font-size: 0.66rem;
+  line-height: 1.55;
 }
 
 .distribution-flow ol {
@@ -3393,6 +3516,11 @@ code {
     grid-template-columns: 1fr;
   }
 
+  .distribution-metrics,
+  .distribution-destinations {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .filter-bar {
     align-items: flex-start;
     flex-direction: column;
@@ -3466,8 +3594,13 @@ code {
   .offer-cards,
   .store-grid,
   .distribution-metrics,
+  .distribution-destinations,
   .commercial-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .destination-card dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .distribution-hero__copy,

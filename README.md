@@ -6,7 +6,8 @@ ofertas excepcionales y posibles errores de precio sin realizar compras.
 
 ## Estado actual
 
-Las Fases 1, 2, 3, 4A, 4B, 4C, 5.1, 5.2, 6.1 y la ampliación 6.2 están
+Las Fases 1, 2, 3, 4A, 4B, 4C, 5.1, 5.2, 6.1, 6.2, 6.3, 6.4, 6.5, 6.6,
+6.7A, 6.8, 6.9 y 6.10 están
 implementadas para ejecución local y privada:
 
 1. Se registra una URL pública de producto.
@@ -36,7 +37,7 @@ implementadas para ejecución local y privada:
     estado de la API del estado real del rastreo.
 16. Docker mantiene PostgreSQL, API, worker, watchdog, respaldos y panel en
     segundo plano, con reinicio automático y logs rotados.
-17. Scrapy descubre progresivamente fichas desde los sitemaps oficiales de nueve
+17. Scrapy descubre progresivamente fichas desde los sitemaps oficiales de dieciséis
     tiendas, con rotación, leases, deduplicación y límites diarios.
 18. Los candidatos requieren aprobación administrativa antes de convertirse en
     productos monitoreados.
@@ -45,18 +46,46 @@ implementadas para ejecución local y privada:
 20. La beta comercial administra suscriptores, vigencias, accesos manuales a
     Telegram, pagos externos confirmados, renovaciones y controles de
     lanzamiento sin almacenar tarjetas ni credenciales bancarias.
+21. La política comercial publica todas las ofertas válidas sin topes diarios
+    o por tienda, distingue los tramos 20/35/50/70, prioriza severidad y permite
+    precio de lista desde 35 % únicamente después de dos comprobaciones.
+22. Cada observación conserva la URL HTTPS de la imagen del SKU cuando la
+    tienda la publica. Telegram intenta usar esa URL y, si el CDN impide que
+    Telegram la descargue, el bot valida y sube temporalmente la imagen desde
+    memoria. Si ambos métodos fallan, conserva la alerta como texto.
+23. El catálogo operativo tiene un objetivo de 1 500 productos; el worker reclama
+    90 por vuelta, admite hasta 300 por CLI y distribuye el cupo entre tiendas.
+24. Las ampliaciones corrigen primero las tiendas y categorías
+    subrepresentadas. Las notificaciones pendientes se intercalan por tienda y
+    categoría sin descartar ninguna oferta válida.
+25. Una detección puede reservar entregas durables e independientes para los
+    canales Free y VIP, con destino, audiencia, regla y momento de enrutamiento
+    auditables.
+26. `TELEGRAM_CHAT_ID` sigue funcionando como compatibilidad del canal Free;
+    los destinos nuevos se configuran con `TELEGRAM_FREE_CHAT_ID`,
+    `TELEGRAM_VIP_CHAT_ID` y `TELEGRAM_OPERATIONS_CHAT_ID`.
+27. El panel de distribución muestra cobertura reciente por tienda, reparto por
+    categoría y una advertencia de concentración sin ocultar ofertas válidas.
+28. El analizador procesa hasta 1 000 observaciones por ciclo y prioriza la
+    última captura de cada producto. Una cola histórica ya no impide confirmar
+    y publicar precios recién rastreados; su tamaño y antigüedad aparecen en
+    **Distribución**.
 
 La primera prueba de la Fase 1 guardó correctamente una barra de sonido a
 `PEN 179.00`, con precio de lista `PEN 499.00`, disponibilidad y vendedor.
 La validación viva de la Fase 2 guardó después una observación de Oechsle y otra
 de Promart, sin errores.
 
-Coolbox, Oechsle, Promart, Cassinelli, EFE, La Curacao, plazaVea, Topitop y Vega
-están habilitadas. Promart, plazaVea y Vega solo alertan con vendedor propio y
-unidad fija, y recuerdan confirmar delivery para el distrito de Lima.
+Coolbox, Oechsle, Promart, Cassinelli, EFE, La Curacao, plazaVea, Topitop, Vega,
+Estilos, Metro, Tottus, Wong, Footloose y Casaideas están habilitadas. Promart,
+plazaVea, Vega, Estilos, Metro, Wong y Casaideas solo alertan con vendedor propio
+y unidad fija, y recuerdan confirmar delivery para el distrito de Lima.
 Cassinelli reutiliza el núcleo VTEX; EFE y La Curacao usan Product/Offer
-JSON-LD contrastado con el precio HTML. Topitop conserva cada talla como SKU y
-variante independiente. Cada tienda mantiene política, dominio, vendedor,
+JSON-LD contrastado con el precio HTML. Topitop y Footloose conservan cada talla
+como SKU y variante independiente, confirman su historial por separado y agrupan
+en un mensaje las tallas con exactamente el mismo precio. Tottus contrasta sus datos públicos de
+producto con JSON-LD. Wong y Casaideas validan unidad fija y vendedor propio
+sobre su catálogo VTEX. Cada tienda mantiene política, dominio, vendedor,
 límites, fixtures y pruebas propios.
 
 El detector de Fase 3, la confirmación, la deduplicación, Telegram, el scheduler,
@@ -80,7 +109,9 @@ plano mientras la PC y Docker Desktop permanezcan encendidos.
 - PostgreSQL: servicio `postgres` de Docker Compose.
 - Datos de PostgreSQL:
   volumen persistente `bot-ofertas_postgres_data`
-- Respaldos: `backups/postgres` dentro del proyecto.
+- Respaldos automáticos: volumen Docker `postgres_backups`, independiente del
+  montaje WSL de Windows. Los respaldos manuales exportados quedan en
+  `backups/postgres` dentro del proyecto.
 
 Apagar la PC no elimina el proyecto ni el historial, pero sí detiene
 temporalmente los rastreos y las alertas. Si Docker Desktop está configurado para
@@ -100,7 +131,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bot-ofertas.ps1 start
 El script construye lo necesario, aplica las migraciones y deja activos
 `postgres`, `api`, `worker`, `watchdog`, `backup` y `dashboard`. El servicio
 `migrations` termina con código `0` después de actualizar el esquema; eso es
-normal. El head actual de migraciones es `0015_offer_episode_deduplication`.
+normal. El head actual de migraciones es `0019_telegram_photo_fallback`.
 
 Comprueba el estado:
 
@@ -141,6 +172,7 @@ Consultar o ejecutar el descubrimiento acotado:
 uv run bot-ofertas discovery sources
 uv run bot-ofertas discovery run
 uv run bot-ofertas discovery candidates --status pending
+uv run bot-ofertas discovery expand --target-active 1500 --limit 1000
 ```
 
 Agregar una ficha pública de una tienda habilitada:
@@ -188,7 +220,8 @@ uv run bot-ofertas confirmation list --limit 20
 ```
 
 Existe `crawl --force` para pruebas manuales, pero no debe usarse repetidamente.
-El límite por ejecución es 20 URLs y el intervalo mínimo aceptado es 30 minutos.
+La vuelta normal reclama hasta 90 URLs, la CLI admite hasta 300 y el intervalo
+mínimo aceptado es 30 minutos.
 `crawl --force` no permite confirmar una candidata antes del intervalo configurado
 para el producto.
 
@@ -210,6 +243,24 @@ lanzamiento está en
 La cobertura efectiva de Promart y Oechsle, y la incorporación de plazaVea,
 Topitop y Vega, están en
 [Fase 6.2: cobertura efectiva y nueve tiendas](docs/phase6-2-effective-coverage.md).
+La política comercial sin topes artificiales, los tramos de descuento y la
+ampliación equilibrada hacia 300 productos están en
+[Fase 6.3: volumen comercial con calidad](docs/phase6-3-commercial-volume.md).
+La ampliación hacia 500 productos, 60 rastreos por vuelta y doce tiendas está en
+[Fase 6.4: ampliación de catálogo y cobertura](docs/phase6-4-catalog-expansion.md).
+La segunda ampliación hacia 700 productos, 90 rastreos por vuelta y quince
+tiendas está en
+[Fase 6.5: segunda ampliación de catálogo y cobertura](docs/phase6-5-second-expansion.md).
+El equilibrio continuo por tienda y categoría, junto con las variantes exactas
+agrupadas, está en
+[Fase 6.6: catálogo y canal equilibrados](docs/phase6-6-balanced-catalog.md).
+La separación auditable entre Free, VIP y operaciones, junto con las métricas
+de cobertura del canal, está en
+[Fase 6.7A: base comercial multicanal](docs/phase6-7a-commercial-distribution.md).
+El balance comercial por categorías y tiendas está en
+[Fase 6.8: canal comercial diversificado](docs/phase6-8-diversified-feed.md).
+La integración conservadora de Falabella Perú está en
+[Fase 6.9: Falabella Perú](docs/phase6-9-falabella.md).
 
 Detener todo sin perder el historial:
 
@@ -363,11 +414,13 @@ La operación y límites actuales están en
 - Circuito persistente por tienda y backoff por producto después de fallos.
 - `User-Agent` propio y configurable.
 
-Coolbox, Oechsle, Promart, Cassinelli, EFE, La Curacao, plazaVea, Topitop y Vega
-son los nueve adapters habilitados. Marketplace, bases por peso o medida,
-identidad ambigua y variantes incompatibles continúan bloqueados. Tottus queda
-diferida por inestabilidad y ubicación; Hiraoka, Ripley, Tai Loy y Memory Kings
-no se integran bajo las condiciones revisadas. Consulta
+Coolbox, Oechsle, Promart, Cassinelli, EFE, La Curacao, plazaVea, Topitop, Vega,
+Estilos, Metro, Tottus, Wong, Footloose, Casaideas y Falabella son los dieciséis
+adapters
+habilitados. Marketplace, bases
+por peso o medida, identidad ambigua y variantes incompatibles continúan
+bloqueados. Hiraoka, Ripley, Tai Loy, Memory Kings y Sodimac no se integran bajo las
+condiciones revisadas. Consulta
 [la política de fuentes](docs/source-policy.md).
 
 La detección automática no significa scraping universal. Solo reconoce dominios
@@ -408,7 +461,13 @@ PC. No equivale todavía a un servicio público: el panel y la API solo escuchan
 en `localhost`, y la disponibilidad depende de que esa PC, Docker Desktop e
 Internet estén activos.
 
-La Fase 6.2 amplía el descubrimiento a nueve tiendas y mejora la cobertura
+La Fase 6.6 eleva el objetivo a 900 productos y mantiene equilibradas las
+ampliaciones y las colas de alertas por tienda y categoría. La Fase 6.5 dejó el
+escalón anterior en 700 productos, 90 rastreos por vuelta y quince tiendas. La
+Fase 6.4 dejó el escalón anterior en 500 productos, 60 rastreos por
+vuelta y doce tiendas. La Fase 6.3 amplía la capacidad del catálogo, publica toda oferta
+válida sin cuotas comerciales por tienda o día y conserva confirmación, filtros
+y deduplicación. La Fase 6.2 amplía el descubrimiento a nueve tiendas y mejora la cobertura
 efectiva: evita gastar cupo en publicaciones de Oechsle cuyo único stock actual
 sea marketplace y permite alertas de Promart con un recordatorio explícito de
 delivery. La Fase 6.1 registra suscriptores, pagos externos, renovaciones,
@@ -417,3 +476,15 @@ retiran manualmente del canal. Los siguientes hitos son medir esta ampliación
 durante el piloto, desplegar permanentemente y, si la beta lo justifica,
 automatizar cobro y membresía. WhatsApp y correo podrán añadirse como canales
 sobre el mismo contrato de notificaciones.
+
+La mejora de diversidad posterior eleva el objetivo operativo a 1 500
+productos. Tanto la ampliación como la entrega consideran las publicaciones
+recientes: si moda o calzado dominaron el canal, los candidatos y ofertas
+pendientes de tecnología, electrohogar, hogar, supermercado y otros rubros
+reciben prioridad. No se descarta ninguna oferta válida.
+
+Falabella se incorpora con una cuota inicial conservadora de 20 aprobaciones
+diarias, 10 fichas por vuelta y 60 minutos mínimos por producto. Solo sus
+ofertas de venta directa pueden alertar; vendedores Marketplace se conservan
+como evidencia, pero no se publican. El precio CMR puede alertar como precio
+condicionado y debe mostrarse como tal.

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from bot_ofertas.detection import DetectorConfig
 from bot_ofertas.domain import Availability, PriceObservation, ProductCondition
 from bot_ofertas.runtime_config import RuntimeSettings
-from bot_ofertas.services.detection import DetectionService
+from bot_ofertas.services.detection import DetectionBatchSummary, DetectionService
 from bot_ofertas.storage import DatabaseSettings, create_database_engine
 from bot_ofertas.storage.models import (
     DealDetection,
@@ -218,6 +218,94 @@ def test_alert_waits_for_a_stable_second_crawl_and_is_reserved_once() -> None:
             )
             == 1
         )
+    finally:
+        session.close()
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
+
+
+def test_verified_list_price_gate_publishes_from_35_percent_but_not_below() -> None:
+    engine = create_database_engine(DatabaseSettings.from_env())
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, expire_on_commit=False)
+    suffix = uuid4().hex
+    settings = RuntimeSettings(
+        detector_version="phase6.3-list-price-gate-v1",
+        confirmation_required=True,
+        confirmation_max_age_minutes=180,
+        confirmation_confidence_bonus=20,
+        minimum_alert_confidence=50,
+        verified_list_price_alert_ratio=Decimal("0.35"),
+        detector_config=DetectorConfig(minimum_history_samples=3),
+    )
+    first_at = datetime.now(UTC) - timedelta(hours=2)
+
+    try:
+        results: dict[str, tuple[DealDetection, DetectionBatchSummary]] = {}
+        for label, price in (("publish", "60.00"), ("suppress", "70.00")):
+            source_url = f"https://www.coolbox.pe/phase63-{label}-{suffix}/p"
+            product = TrackedProductRepository(session).add(
+                store_slug="coolbox",
+                source_url=source_url,
+                label=f"Producto lista {label}",
+                expected_brand="Acme",
+                expected_model="X14",
+                expected_variant=_VARIANT,
+                check_interval_minutes=60,
+            )
+            first_id = _save_observation(
+                session,
+                product_id=product.id,
+                store_slug="coolbox",
+                source_url=source_url,
+                observed_at=first_at,
+                price=price,
+                marker=f"{suffix}-{label}-1",
+                external_product_id=f"{label}-{suffix}",
+            )
+            first_summary = DetectionService(session, settings).process_new()
+            first_detection = session.scalar(
+                select(DealDetection).where(
+                    DealDetection.observation_id == first_id,
+                    DealDetection.detector_version == settings.detector_version,
+                )
+            )
+            assert first_summary.awaiting_confirmation == 1
+            assert first_detection is not None
+
+            second_id = _save_observation(
+                session,
+                product_id=product.id,
+                store_slug="coolbox",
+                source_url=source_url,
+                observed_at=first_at + timedelta(hours=1),
+                price=price,
+                marker=f"{suffix}-{label}-2",
+                external_product_id=f"{label}-{suffix}",
+            )
+            summary = DetectionService(session, settings).process_new()
+            detection = session.scalar(
+                select(DealDetection).where(
+                    DealDetection.observation_id == second_id,
+                    DealDetection.detector_version == settings.detector_version,
+                )
+            )
+            assert detection is not None
+            assert first_detection.notification_status == "superseded"
+            results[label] = (detection, summary)
+
+        publish_detection, publish_summary = results["publish"]
+        assert publish_summary.notifications_reserved == 1
+        assert publish_detection.notification_status == "pending"
+        assert publish_detection.metrics["publication"]["gate"] == "verified_list_price"
+
+        suppress_detection, suppress_summary = results["suppress"]
+        assert suppress_summary.notifications_reserved == 0
+        assert suppress_summary.low_confidence_suppressed == 1
+        assert suppress_detection.notification_status == "suppressed"
+        assert suppress_detection.metrics["publication"]["gate"] == "closed"
     finally:
         session.close()
         transaction.rollback()

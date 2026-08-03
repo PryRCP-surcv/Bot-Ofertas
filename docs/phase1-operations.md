@@ -71,6 +71,10 @@ conversación, pero el bot todavía no responde comandos ni mensajes.
 TELEGRAM_ENABLED=true
 TELEGRAM_BOT_TOKEN=token_entregado_por_BotFather
 TELEGRAM_CHAT_ID=
+TELEGRAM_FREE_CHAT_ID=
+TELEGRAM_VIP_CHAT_ID=
+TELEGRAM_VIP_MIRROR_ENABLED=true
+TELEGRAM_OPERATIONS_CHAT_ID=
 ```
 
 Para conocer el `chat_id`, consulta las actualizaciones sin ejecutar `.env` como
@@ -106,7 +110,10 @@ print("\n".join(sorted(chat_ids)) or "Envía /start al bot y vuelve a intentarlo
 PY
 ```
 
-Guarda el número obtenido como `TELEGRAM_CHAT_ID`. Nunca compartas `.env`, el
+Guarda el número obtenido como `TELEGRAM_FREE_CHAT_ID`. Si la instalación ya
+usa `TELEGRAM_CHAT_ID`, no es obligatorio cambiarlo: funciona como fallback del
+canal Free. `TELEGRAM_VIP_CHAT_ID` y `TELEGRAM_OPERATIONS_CHAT_ID` son
+opcionales. Nunca compartas `.env`, el
 mensaje de BotFather, una captura que contenga el token ni una URL de la API que
 lo incluya. Si un token se expone, genera uno nuevo inmediatamente desde
 BotFather con `/token`.
@@ -120,6 +127,11 @@ uv run bot-ofertas notify
 
 `notify` realiza envíos reales de las alertas pendientes cuando Telegram está
 configurado.
+
+Las observaciones nuevas guardan la imagen pública HTTPS informada por la
+tienda. Si una oferta confirmada tiene imagen, Telegram la envía como foto con
+una descripción y un botón a la ficha; si Telegram rechaza la foto, el mismo
+intento continúa con el mensaje de texto para no perder la alerta.
 
 ## 4. Ejecutar el monitor
 
@@ -177,6 +189,17 @@ Una observación malformada se conserva como `processing_error` en vez de
 bloquear la cola. Cada etapa del ciclo está aislada: aunque el rastreo o una
 decisión fallen, el sistema todavía intenta despachar alertas que ya estaban
 pendientes.
+
+El análisis admite 1 000 observaciones por ciclo de forma predeterminada,
+configurables con `BOT_ANALYSIS_LIMIT` entre 100 y 5 000. Primero procesa la
+captura más reciente de cada producto y después consume el historial pendiente.
+Así, una ampliación del catálogo no deja las ofertas nuevas detenidas detrás de
+una cola antigua. El panel **Distribución** muestra cantidad pendiente,
+antigüedad de la observación más antigua y ciclos estimados para vaciarla.
+
+Una cola histórica puede tardar varios ciclos en llegar a cero sin afectar los
+nuevos avisos. Una oferta todavía requiere una segunda observación independiente
+para confirmarse; aumentar la capacidad no elimina esa protección.
 
 ## 6. Cómo decide
 

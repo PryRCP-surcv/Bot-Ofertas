@@ -85,17 +85,14 @@ class NotificationDispatcher:
         retrying = 0
         failed = 0
         released = 0
-        for _position in range(limit):
-            with session_scope(self._session_factory) as session:
-                claims = NotificationDeliveryRepository(session).claim_due(
-                    channel=self._channel.channel_name,
-                    limit=1,
-                    max_attempts=self._settings.notification_max_attempts,
-                    lease_duration=timedelta(seconds=self._settings.notification_lease_seconds),
-                )
-            if not claims:
-                break
-            claim = claims[0]
+        with session_scope(self._session_factory) as session:
+            claims = NotificationDeliveryRepository(session).claim_due(
+                channel=self._channel.channel_name,
+                limit=limit,
+                max_attempts=self._settings.notification_max_attempts,
+                lease_duration=timedelta(seconds=self._settings.notification_lease_seconds),
+            )
+        for claim in claims:
             claimed += 1
             try:
                 result = self._channel.send(_notification(claim))
@@ -127,6 +124,7 @@ class NotificationDispatcher:
                     retryable=(result.retryable if result.retryable is not None else True),
                     retry_after_seconds=result.retry_after_seconds,
                     provider_message_id=result.message_id,
+                    delivery_method=result.delivery_method,
                     error_code=result.status.value if not result.sent else None,
                     error_detail=result.detail,
                 )
@@ -156,6 +154,7 @@ def _notification(claim: NotificationClaim) -> OfferNotification:
         currency=claim.currency,
         reason=f"{_reason(claim.reason_codes)}. Referencia interna #{claim.detection_id}",
         product_url=claim.product_url,
+        image_url=claim.image_url,
         comparison_price=claim.comparison_price,
         discount_percent=claim.discount_percent,
         store_name=claim.store_slug,
@@ -163,6 +162,7 @@ def _notification(claim: NotificationClaim) -> OfferNotification:
         confidence_score=claim.confidence_score,
         confirmation_count=claim.confirmation_count,
         conditions=_conditions(claim.condition_flags),
+        variant_summary=claim.variant_summary,
     )
 
 

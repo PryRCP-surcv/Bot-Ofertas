@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert
@@ -21,6 +22,8 @@ from bot_ofertas.storage.models import (
     TrackedProduct,
 )
 from bot_ofertas.stores import StoreRegistry
+
+_LIMA_TIMEZONE = ZoneInfo("America/Lima")
 
 
 class DiscoveryLeaseLostError(RuntimeError):
@@ -43,6 +46,14 @@ class CandidateRecordResult:
     candidate_id: UUID
     inserted_pending: bool
     duplicate: bool
+
+
+def lima_day_start_utc(value: datetime) -> datetime:
+    """Return the UTC instant at which the current Lima calendar day began."""
+
+    timestamp = _utc(value)
+    local = timestamp.astimezone(_LIMA_TIMEZONE)
+    return local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
 
 
 class DiscoveryRepository:
@@ -450,12 +461,12 @@ class DiscoveryRepository:
             self._set_review(candidate, reviewed_by=reviewed_by, now=timestamp)
             return candidate
 
-        utc_day = timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
+        local_day_start = lima_day_start_utc(timestamp)
         approved_today = self.session.scalar(
             select(func.count(DiscoveryCandidate.id)).where(
                 DiscoveryCandidate.store_slug == candidate.store_slug,
                 DiscoveryCandidate.status == DiscoveryCandidateStatus.APPROVED.value,
-                DiscoveryCandidate.reviewed_at >= utc_day,
+                DiscoveryCandidate.reviewed_at >= local_day_start,
             )
         )
         if int(approved_today or 0) >= source.daily_approval_limit:

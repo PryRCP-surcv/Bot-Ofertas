@@ -14,6 +14,7 @@ class TopitopAdapter(StoreAdapter):
         minimum_interval_minutes=60,
         max_targets_per_run=10,
         requires_explicit_product_url=True,
+        allow_all_exact_variants=True,
         notes=(
             "Catálogo público VTEX con SKU por talla, vendedor propio verificado "
             "y precio total separado de promociones o cuotas."

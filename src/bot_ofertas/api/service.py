@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from math import ceil
@@ -20,6 +21,8 @@ from bot_ofertas.api.cursors import (
     encode_cursor,
 )
 from bot_ofertas.api.schemas import (
+    AnalysisBacklogRead,
+    CatalogCoverageRead,
     CommercialSummaryRead,
     ConfirmationRead,
     CrawlJobCreate,
@@ -30,6 +33,8 @@ from bot_ofertas.api.schemas import (
     DiscoveryReview,
     DiscoveryRunRead,
     DiscoverySourceRead,
+    DistributionBucketRead,
+    DistributionConcentrationRead,
     LaunchChecklistItemRead,
     LaunchChecklistUpdate,
     ObservationRead,
@@ -45,13 +50,16 @@ from bot_ofertas.api.schemas import (
     ProductVariant,
     RuntimePolicyPatch,
     RuntimePolicyRead,
+    StoreCoverageRead,
     StoreRead,
     SubscriberCreate,
     SubscriberPatch,
     SubscriberRead,
+    TelegramDestinationStatusRead,
     TelegramDistributionStatusRead,
     TelegramTestRead,
 )
+from bot_ofertas.catalog_balance import CATEGORY_LABELS, catalog_category
 from bot_ofertas.detection import canonicalize_variant
 from bot_ofertas.domain import Availability
 from bot_ofertas.notifications import TelegramNotifier
@@ -132,40 +140,49 @@ def operations_status(session: Session) -> OperationsStatusRead:
     return OperationsStatusRead.model_validate(read_operations_snapshot(session))
 
 
-def telegram_distribution_status(
-    session: Session,
-) -> TelegramDistributionStatusRead:
-    """Expose safe beta-channel readiness and durable queue pressure."""
+_DISTRIBUTION_QUEUE_STATUSES = (
+    "pending",
+    "retrying",
+    "sent",
+    "failed",
+    "superseded",
+)
+_COVERAGE_TARGET_PERCENT = Decimal("95")
+_CONCENTRATION_WARNING_PERCENT = Decimal("50")
 
-    settings = resolve_runtime_policy(session).settings
-    configured = bool(settings.telegram_token and settings.telegram_chat_id)
-    queue_counts = {
-        "pending": 0,
-        "retrying": 0,
-        "sent": 0,
-        "failed": 0,
-        "superseded": 0,
-    }
+
+def _percentage(count: int, total: int) -> Decimal:
+    if total <= 0:
+        return Decimal("0.00")
+    return (Decimal(count) * Decimal("100") / Decimal(total)).quantize(
+        Decimal("0.01")
+    )
+
+
+def _queue_counts(session: Session, *, channel: str) -> dict[str, int]:
+    counts = {status: 0 for status in _DISTRIBUTION_QUEUE_STATUSES}
     for delivery_status, count in session.execute(
         select(
             NotificationDelivery.status,
             func.count(NotificationDelivery.id),
         )
-        .where(NotificationDelivery.channel == "telegram")
+        .where(NotificationDelivery.channel == channel)
         .group_by(NotificationDelivery.status)
     ):
-        if delivery_status in queue_counts:
-            queue_counts[delivery_status] = int(count)
-    last_sent_at = session.scalar(
-        select(func.max(NotificationDelivery.sent_at)).where(
-            NotificationDelivery.channel == "telegram",
-            NotificationDelivery.status == "sent",
-        )
-    )
-    last_failure = session.scalar(
+        if delivery_status in counts:
+            counts[delivery_status] = int(count)
+    return counts
+
+
+def _last_delivery_failure(
+    session: Session,
+    *,
+    channel: str,
+) -> NotificationDelivery | None:
+    return session.scalar(
         select(NotificationDelivery)
         .where(
-            NotificationDelivery.channel == "telegram",
+            NotificationDelivery.channel == channel,
             NotificationDelivery.last_error.is_not(None),
         )
         .order_by(
@@ -174,34 +191,373 @@ def telegram_distribution_status(
         )
         .limit(1)
     )
-    ready = settings.telegram_enabled and configured
+
+
+def _distribution_buckets(
+    counts: Counter[str],
+    *,
+    labels: dict[str, str] | None = None,
+) -> list[DistributionBucketRead]:
+    total = sum(counts.values())
+    resolved_labels = labels or {}
+    return [
+        DistributionBucketRead(
+            key=key,
+            label=resolved_labels.get(key, key),
+            count=count,
+            percentage=_percentage(count, total),
+        )
+        for key, count in sorted(
+            counts.items(),
+            key=lambda item: (-item[1], item[0]),
+        )
+    ]
+
+
+def _catalog_coverage(
+    session: Session,
+    *,
+    now: datetime,
+) -> CatalogCoverageRead:
+    cutoff = now - timedelta(hours=24)
+    stores: list[StoreCoverageRead] = []
+    active_total = 0
+    successful_total = 0
+    for store_slug, active_count, successful_count in session.execute(
+        select(
+            TrackedProduct.store_slug,
+            func.count(TrackedProduct.id),
+            func.count(TrackedProduct.id).filter(
+                TrackedProduct.last_success_at >= cutoff
+            ),
+        )
+        .where(
+            TrackedProduct.active.is_(True),
+            TrackedProduct.archived_at.is_(None),
+        )
+        .group_by(TrackedProduct.store_slug)
+        .order_by(TrackedProduct.store_slug)
+    ):
+        active = int(active_count)
+        successful = int(successful_count)
+        coverage = _percentage(successful, active)
+        active_total += active
+        successful_total += successful
+        stores.append(
+            StoreCoverageRead(
+                store_slug=store_slug,
+                active_products=active,
+                successful_products_24h=successful,
+                coverage_percent=coverage,
+                meets_target=coverage >= _COVERAGE_TARGET_PERCENT,
+            )
+        )
+    coverage = _percentage(successful_total, active_total)
+    return CatalogCoverageRead(
+        active_products=active_total,
+        successful_products_24h=successful_total,
+        coverage_percent=coverage,
+        target_percent=_COVERAGE_TARGET_PERCENT,
+        meets_target=coverage >= _COVERAGE_TARGET_PERCENT,
+        stores=stores,
+    )
+
+
+def _analysis_backlog(
+    session: Session,
+    *,
+    detector_version: str,
+    capacity_per_cycle: int,
+    now: datetime,
+) -> AnalysisBacklogRead:
+    processed = exists(
+        select(DealDetection.id).where(
+            DealDetection.observation_id == PriceObservationRecord.id,
+            DealDetection.detector_version == detector_version,
+        )
+    )
+    pending, oldest = session.execute(
+        select(
+            func.count(PriceObservationRecord.id),
+            func.min(PriceObservationRecord.observed_at),
+        ).where(~processed)
+    ).one()
+    pending_count = int(pending)
+    oldest_age_hours = (
+        Decimal(str(max(0.0, (now - oldest).total_seconds() / 3_600))).quantize(
+            Decimal("0.01")
+        )
+        if oldest is not None
+        else Decimal("0")
+    )
+    estimated_cycles = (
+        ceil(pending_count / capacity_per_cycle)
+        if pending_count
+        else 0
+    )
+    return AnalysisBacklogRead(
+        pending_observations=pending_count,
+        oldest_observed_at=oldest,
+        oldest_age_hours=oldest_age_hours,
+        capacity_per_cycle=capacity_per_cycle,
+        estimated_cycles=estimated_cycles,
+        warning=(
+            pending_count > capacity_per_cycle
+            or oldest_age_hours >= Decimal("2")
+        ),
+    )
+
+
+def _distribution_concentration(
+    session: Session,
+    *,
+    now: datetime,
+) -> DistributionConcentrationRead:
+    cutoff = now - timedelta(hours=24)
+    rows = list(
+        session.execute(
+            select(DealDetection.id, PriceObservationRecord)
+            .join(
+                PriceObservationRecord,
+                PriceObservationRecord.id == DealDetection.observation_id,
+            )
+            .join(
+                NotificationDelivery,
+                NotificationDelivery.detection_id == DealDetection.id,
+            )
+            .where(
+                NotificationDelivery.channel == "telegram_free",
+                NotificationDelivery.status == "sent",
+                NotificationDelivery.sent_at >= cutoff,
+            )
+            .order_by(DealDetection.id)
+        )
+    )
+    category_counts: Counter[str] = Counter()
+    store_counts: Counter[str] = Counter()
+    seen_detections: set[int] = set()
+    for detection_id, observation in rows:
+        if detection_id in seen_detections:
+            continue
+        seen_detections.add(detection_id)
+        category_counts[
+            catalog_category(
+                store_slug=observation.store_slug,
+                label=observation.title,
+                category_path=tuple(observation.category_path or ()),
+            )
+        ] += 1
+        store_counts[observation.store_slug] += 1
+
+    latest_observation = (
+        select(
+            PriceObservationRecord.tracked_product_id.label("tracked_product_id"),
+            func.max(PriceObservationRecord.id).label("observation_id"),
+        )
+        .where(PriceObservationRecord.tracked_product_id.is_not(None))
+        .group_by(PriceObservationRecord.tracked_product_id)
+        .subquery()
+    )
+    uncategorized = 0
+    for store_slug, label, title, category_path in session.execute(
+        select(
+            TrackedProduct.store_slug,
+            TrackedProduct.label,
+            PriceObservationRecord.title,
+            PriceObservationRecord.category_path,
+        )
+        .outerjoin(
+            latest_observation,
+            latest_observation.c.tracked_product_id == TrackedProduct.id,
+        )
+        .outerjoin(
+            PriceObservationRecord,
+            PriceObservationRecord.id == latest_observation.c.observation_id,
+        )
+        .where(
+            TrackedProduct.active.is_(True),
+            TrackedProduct.archived_at.is_(None),
+        )
+    ):
+        category = catalog_category(
+            store_slug=store_slug,
+            label=title or label,
+            category_path=tuple(category_path or ()),
+        )
+        uncategorized += int(category == "other")
+
+    unique_alerts = len(seen_detections)
+    dominant_category = (
+        category_counts.most_common(1)[0][0] if category_counts else None
+    )
+    dominant_count = (
+        category_counts[dominant_category] if dominant_category is not None else 0
+    )
+    dominant_percent = _percentage(dominant_count, unique_alerts)
+    return DistributionConcentrationRead(
+        window_hours=24,
+        unique_alerts=unique_alerts,
+        warning_threshold_percent=_CONCENTRATION_WARNING_PERCENT,
+        dominant_category=dominant_category,
+        dominant_category_label=(
+            CATEGORY_LABELS.get(dominant_category)
+            if dominant_category is not None
+            else None
+        ),
+        dominant_category_percent=dominant_percent,
+        warning=(
+            unique_alerts > 0
+            and dominant_percent >= _CONCENTRATION_WARNING_PERCENT
+        ),
+        categories=_distribution_buckets(
+            category_counts,
+            labels=CATEGORY_LABELS,
+        ),
+        stores=_distribution_buckets(store_counts),
+        uncategorized_catalog_products=uncategorized,
+    )
+
+
+def telegram_distribution_status(
+    session: Session,
+) -> TelegramDistributionStatusRead:
+    """Expose safe multi-destination readiness, coverage, and concentration."""
+
+    now = datetime.now(UTC)
+    settings = resolve_runtime_policy(session).settings
+    destinations: list[TelegramDestinationStatusRead] = []
+    aggregate_counts = {status: 0 for status in _DISTRIBUTION_QUEUE_STATUSES}
+    latest_sent: datetime | None = None
+    latest_failure: NotificationDelivery | None = None
+    for destination in settings.telegram_offer_destinations():
+        counts = _queue_counts(session, channel=destination.channel)
+        for status, count in counts.items():
+            aggregate_counts[status] += count
+        last_sent_at = session.scalar(
+            select(func.max(NotificationDelivery.sent_at)).where(
+                NotificationDelivery.channel == destination.channel,
+                NotificationDelivery.status == "sent",
+            )
+        )
+        last_failure = _last_delivery_failure(
+            session,
+            channel=destination.channel,
+        )
+        if last_sent_at is not None and (
+            latest_sent is None or last_sent_at > latest_sent
+        ):
+            latest_sent = last_sent_at
+        if last_failure is not None and (
+            latest_failure is None
+            or last_failure.updated_at > latest_failure.updated_at
+        ):
+            latest_failure = last_failure
+        configured = bool(settings.telegram_token and destination.chat_id)
+        destinations.append(
+            TelegramDestinationStatusRead(
+                channel=destination.channel,
+                audience=destination.audience,
+                dispatch_mode=destination.dispatch_mode,
+                configured=configured,
+                ready=settings.telegram_enabled and configured,
+                queue_counts=counts,
+                sent_24h=int(
+                    session.scalar(
+                        select(func.count(NotificationDelivery.id)).where(
+                            NotificationDelivery.channel == destination.channel,
+                            NotificationDelivery.status == "sent",
+                            NotificationDelivery.sent_at >= now - timedelta(hours=24),
+                        )
+                    )
+                    or 0
+                ),
+                sent_7d=int(
+                    session.scalar(
+                        select(func.count(NotificationDelivery.id)).where(
+                            NotificationDelivery.channel == destination.channel,
+                            NotificationDelivery.status == "sent",
+                            NotificationDelivery.sent_at >= now - timedelta(days=7),
+                        )
+                    )
+                    or 0
+                ),
+                last_sent_at=last_sent_at,
+                last_error_at=(
+                    last_failure.updated_at if last_failure is not None else None
+                ),
+                last_error_code=(
+                    last_failure.last_error_code
+                    if last_failure is not None
+                    else None
+                ),
+                last_error=(
+                    last_failure.last_error if last_failure is not None else None
+                ),
+            )
+        )
+
+    primary = next(
+        (destination for destination in destinations if destination.audience == "free"),
+        None,
+    )
+    configured = bool(primary and primary.configured)
+    ready = bool(primary and primary.ready)
     return TelegramDistributionStatusRead(
         enabled=settings.telegram_enabled,
         configured=configured,
         ready=ready,
-        audience_mode="single_chat",
+        audience_mode=(
+            "multi_destination" if len(destinations) > 1 else "single_chat"
+        ),
         membership_mode="manual",
         payment_mode="manual_external",
         automatic_offer_delivery=ready,
-        queue_counts=queue_counts,
-        last_sent_at=last_sent_at,
-        last_error_at=last_failure.updated_at if last_failure else None,
-        last_error_code=last_failure.last_error_code if last_failure else None,
-        last_error=last_failure.last_error if last_failure else None,
+        queue_counts=aggregate_counts,
+        destinations=destinations,
+        coverage=_catalog_coverage(session, now=now),
+        analysis_backlog=_analysis_backlog(
+            session,
+            detector_version=settings.detector_version,
+            capacity_per_cycle=settings.analysis_limit,
+            now=now,
+        ),
+        concentration=_distribution_concentration(session, now=now),
+        last_sent_at=latest_sent,
+        last_error_at=(
+            latest_failure.updated_at if latest_failure is not None else None
+        ),
+        last_error_code=(
+            latest_failure.last_error_code
+            if latest_failure is not None
+            else None
+        ),
+        last_error=(
+            latest_failure.last_error if latest_failure is not None else None
+        ),
     )
 
 
 def send_telegram_beta_test(
     session: Session,
     *,
+    destination: str = "telegram_free",
     notifier: TelegramNotifier | None = None,
 ) -> TelegramTestRead:
-    """Send one fixed, non-user-controlled message to the configured beta audience."""
+    """Send one fixed, non-user-controlled message to an allowed destination."""
 
     settings = resolve_runtime_policy(session).settings
+    allowed = {
+        item.channel: item for item in settings.telegram_offer_destinations()
+    }
+    selected = allowed.get(destination.strip().casefold())
+    if selected is None:
+        raise InvalidCommercialRequestError(
+            "destino Telegram desconocido o no habilitado"
+        )
     channel = notifier or TelegramNotifier(
         token=settings.telegram_token,
-        chat_id=settings.telegram_chat_id,
+        chat_id=selected.chat_id,
+        channel_name=selected.channel,
         enabled=settings.telegram_enabled,
         timeout_seconds=8,
     )
@@ -211,6 +567,7 @@ def send_telegram_beta_test(
         "Las ofertas confirmadas llegarán automáticamente aquí."
     )
     return TelegramTestRead(
+        destination=selected.channel,
         status=result.status.value,
         sent=result.sent,
         message_id=result.message_id,
@@ -328,7 +685,7 @@ def commercial_summary(session: Session) -> CommercialSummaryRead:
     )
 
     sent_base = (
-        NotificationDelivery.channel == "telegram",
+        NotificationDelivery.channel == "telegram_free",
         NotificationDelivery.status == "sent",
         NotificationDelivery.sent_at.is_not(None),
     )
@@ -375,7 +732,7 @@ def commercial_summary(session: Session) -> CommercialSummaryRead:
     telegram_ready = bool(
         runtime_settings.telegram_enabled
         and runtime_settings.telegram_token
-        and runtime_settings.telegram_chat_id
+        and runtime_settings.effective_telegram_free_chat_id
     )
     return CommercialSummaryRead(
         total_subscribers=sum(status_counts.values()),
@@ -1659,6 +2016,7 @@ def _runtime_policy_read(effective: EffectiveRuntimePolicy) -> RuntimePolicyRead
         changed_by=effective.changed_by,
         change_reason=effective.change_reason,
         detector_version=settings.detector_version,
+        analysis_limit=settings.analysis_limit,
         scheduler_poll_seconds=settings.scheduler_poll_seconds,
         detection_history_limit=settings.detection_history_limit,
         detection_history_days=settings.detection_history_days,
@@ -1679,6 +2037,9 @@ def _runtime_policy_read(effective: EffectiveRuntimePolicy) -> RuntimePolicyRead
         ),
         confirmation_confidence_bonus=settings.confirmation_confidence_bonus,
         minimum_alert_confidence=settings.minimum_alert_confidence,
+        verified_list_price_alert_percent=(
+            settings.verified_list_price_alert_ratio * Decimal("100")
+        ),
         good_deal_percent=thresholds.good_deal * Decimal("100"),
         exceptional_deal_percent=(
             thresholds.exceptional_deal * Decimal("100")
@@ -1697,10 +2058,20 @@ def _runtime_policy_read(effective: EffectiveRuntimePolicy) -> RuntimePolicyRead
         ),
         telegram_enabled=settings.telegram_enabled,
         telegram_configured=bool(
-            settings.telegram_token and settings.telegram_chat_id
+            settings.telegram_token and settings.effective_telegram_free_chat_id
         ),
         telegram_token_configured=bool(settings.telegram_token),
-        telegram_chat_id_configured=bool(settings.telegram_chat_id),
+        telegram_chat_id_configured=bool(
+            settings.effective_telegram_free_chat_id
+        ),
+        telegram_free_chat_id_configured=bool(
+            settings.effective_telegram_free_chat_id
+        ),
+        telegram_vip_chat_id_configured=bool(settings.telegram_vip_chat_id),
+        telegram_operations_chat_id_configured=bool(
+            settings.effective_telegram_operations_chat_id
+        ),
+        telegram_vip_mirror_enabled=settings.telegram_vip_mirror_enabled,
     )
 
 

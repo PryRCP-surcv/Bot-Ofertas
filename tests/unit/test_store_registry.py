@@ -82,14 +82,21 @@ def test_builtin_registry_detects_and_normalizes_coolbox_urls() -> None:
     assert registry.enabled_store_slugs == frozenset(
         {
             "cassinelli",
+            "casaideas",
             "coolbox",
             "curacao",
             "efe",
+            "estilos",
+            "falabella",
+            "footloose",
+            "metro",
             "oechsle",
             "plazavea",
             "promart",
             "topitop",
+            "tottus",
             "vega",
+            "wong",
         }
     )
 
@@ -143,6 +150,57 @@ def test_builtin_registry_detects_and_normalizes_coolbox_urls() -> None:
     )
     assert vega_url == "https://www.vega.pe/gaseosa-demo/p"
     assert vega.policy.max_targets_per_run == 5
+
+    estilos, estilos_url = registry.resolve(
+        "https://estilos.com.pe/cb008923-326/p?utm_source=test"
+    )
+    assert estilos_url == "https://www.estilos.com.pe/cb008923-326/p"
+    assert estilos.policy.max_targets_per_run == 10
+
+    falabella, falabella_url = registry.resolve(
+        "https://falabella.com.pe/falabella-pe/product/80044160/"
+        "televisor-samsung-65-mini-led/80044160?utm_source=test"
+    )
+    assert falabella_url == (
+        "https://www.falabella.com.pe/falabella-pe/product/80044160/"
+        "televisor-samsung-65-mini-led/80044160"
+    )
+    assert falabella.policy.max_targets_per_run == 10
+
+    metro, metro_url = registry.resolve(
+        "https://metro.pe/miniganchos-multiusos-pack-6-un-2/p?utm_source=test"
+    )
+    assert metro_url == (
+        "https://www.metro.pe/miniganchos-multiusos-pack-6-un-2/p"
+    )
+    assert metro.policy.max_targets_per_run == 10
+
+    tottus, tottus_url = registry.resolve(
+        "https://tottus.com.pe/tottus-pe/articulo/100/"
+        "producto-demo/101?utm_source=test"
+    )
+    assert tottus_url == (
+        "https://www.tottus.com.pe/tottus-pe/articulo/100/producto-demo/101"
+    )
+    assert tottus.policy.max_targets_per_run == 10
+
+    wong, wong_url = registry.resolve(
+        "https://wong.pe/producto-demo/p?utm_source=test"
+    )
+    assert wong_url == "https://www.wong.pe/producto-demo/p"
+    assert wong.policy.max_targets_per_run == 10
+
+    footloose, footloose_url = registry.resolve(
+        "https://footloose.pe/zapatilla-demo/p?utm_source=test"
+    )
+    assert footloose_url == "https://www.footloose.pe/zapatilla-demo/p"
+    assert footloose.policy.max_targets_per_run == 10
+
+    casaideas, casaideas_url = registry.resolve(
+        "https://casaideas.com.pe/producto-demo/p?utm_source=test"
+    )
+    assert casaideas_url == "https://www.casaideas.com.pe/producto-demo/p"
+    assert casaideas.policy.max_targets_per_run == 10
 
 
 def test_registry_resolves_registered_hosts_without_guessing() -> None:

@@ -56,8 +56,15 @@ class DiscoverySourceSpec:
             raise ValueError("active_product_limit must be between 1 and 10000")
         if not self.child_path_pattern:
             raise ValueError("child_path_pattern must not be empty")
-        if self.url_entry_filter not in {"all", "has_image"}:
-            raise ValueError("url_entry_filter must be 'all' or 'has_image'")
+        if self.url_entry_filter not in {
+            "all",
+            "exclude_placeholder_slugs",
+            "has_image",
+        }:
+            raise ValueError(
+                "url_entry_filter must be 'all', 'has_image' or "
+                "'exclude_placeholder_slugs'"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +75,7 @@ class StorePolicy:
     minimum_interval_minutes: int = 30
     max_targets_per_run: int = 20
     requires_explicit_product_url: bool = True
+    allow_all_exact_variants: bool = False
     notes: str = ""
 
     def __post_init__(self) -> None:
@@ -75,6 +83,8 @@ class StorePolicy:
             raise ValueError("minimum_interval_minutes must be at least 30")
         if self.max_targets_per_run <= 0:
             raise ValueError("max_targets_per_run must be positive")
+        if not isinstance(self.allow_all_exact_variants, bool):
+            raise TypeError("allow_all_exact_variants must be a boolean")
 
 
 class StoreAdapter(ABC):

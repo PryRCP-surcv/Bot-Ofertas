@@ -80,6 +80,8 @@ services:
   worker:
     <<: *python-service
     restart: unless-stopped
+    stop_signal: SIGINT
+    stop_grace_period: 2m
     command: ["bot-ofertas", "run"]
     depends_on:
       postgres:
@@ -108,27 +110,39 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD}
       BOT_BACKUP_INTERVAL_SECONDS: ${BOT_BACKUP_INTERVAL_SECONDS:-86400}
       BOT_BACKUP_RETENTION_DAYS: ${BOT_BACKUP_RETENTION_DAYS:-14}
+      BOT_BACKUP_CHECK_SECONDS: ${BOT_BACKUP_CHECK_SECONDS:-300}
       TZ: America/Lima
     volumes:
-      - ./backups/postgres:/backups
+      - postgres_backups:/backups
     command:
       - sh
       - -ec
       - |
+        temporary=""
+        trap '[ -z "$${temporary}" ] || rm -f "$${temporary}"; exit 0' INT TERM
         while true; do
-          timestamp=$$(date -u +%Y%m%d-%H%M%S)
-          temporary="/backups/.bot-ofertas-$${timestamp}-$$.tmp"
-          destination="/backups/bot-ofertas-$${timestamp}.dump"
-          trap 'rm -f "$${temporary}"' EXIT INT TERM
-          pg_dump --format=custom --file "$${temporary}"
-          pg_restore --list "$${temporary}" >/dev/null
-          mv "$${temporary}" "$${destination}"
-          touch /backups/.last-success
-          find /backups -maxdepth 1 -type f -name 'bot-ofertas-*.dump' \
-            -mtime "+$${BOT_BACKUP_RETENTION_DAYS}" -delete
-          echo "Respaldo diario verificado: $${destination}"
-          trap - EXIT
-          sleep "$${BOT_BACKUP_INTERVAL_SECONDS}"
+          now=$$(date +%s)
+          last=$$(stat -c %Y /backups/.last-success 2>/dev/null || echo 0)
+          if [ $$((now-last)) -ge "$${BOT_BACKUP_INTERVAL_SECONDS}" ]; then
+            timestamp=$$(date -u +%Y%m%d-%H%M%S)
+            temporary="/backups/.bot-ofertas-$${timestamp}-$$.tmp"
+            destination="/backups/bot-ofertas-$${timestamp}.dump"
+            if pg_dump --format=custom --file "$${temporary}" \
+              && pg_restore --list "$${temporary}" >/dev/null; then
+              mv "$${temporary}" "$${destination}"
+              temporary=""
+              touch /backups/.last-success
+              find /backups -maxdepth 1 -type f -name 'bot-ofertas-*.dump' \
+                -mtime "+$${BOT_BACKUP_RETENTION_DAYS}" -delete \
+                || echo "No se pudo completar la retención; el respaldo es válido." >&2
+              echo "Respaldo diario verificado: $${destination}"
+            else
+              rm -f "$${temporary}"
+              temporary=""
+              echo "El respaldo falló; se reintentará sin detener el servicio." >&2
+            fi
+          fi
+          sleep "$${BOT_BACKUP_CHECK_SECONDS}"
         done
     depends_on:
       postgres:
@@ -174,4 +188,5 @@ services:
     logging: *local-logging
 
 volumes:
+  postgres_backups:
   postgres_data:

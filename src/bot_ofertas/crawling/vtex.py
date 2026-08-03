@@ -15,6 +15,7 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from uuid import UUID
 
 from bot_ofertas.detection import COMMERCIAL_CONDITION_SIGNATURE_PREFIX
+from bot_ofertas.domain import normalize_optional_https_url
 
 MAX_REPORTED_QUANTITY = 99_999
 
@@ -338,6 +339,12 @@ def parse_vtex_products(
             variant = _variant_attributes(item)
             sku_reference_id = _reference_id(item.get("referenceId"))
             condition = _detect_condition(product, item)
+            image_url = _first_https_image(
+                item.get("images"),
+                item.get("imageUrl"),
+                product.get("image"),
+                product.get("imageUrl"),
+            )
 
             sellers = item.get("sellers", [])
             if sellers is None:
@@ -422,6 +429,7 @@ def parse_vtex_products(
                         "title": sku_name,
                         "brand": brand,
                         "model": model,
+                        "image_url": image_url,
                         "category_path": category_path,
                         "variant": variant,
                         "condition": condition,
@@ -440,6 +448,36 @@ def parse_vtex_products(
                 )
 
     return observations
+
+
+def _first_https_image(*values: Any) -> str | None:
+    """Return the first safe image URL reported by a reviewed VTEX payload."""
+
+    candidates: list[str] = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, str):
+            candidates.append(value)
+        elif isinstance(value, Mapping):
+            for key in ("imageUrl", "imageURL", "url", "contentUrl"):
+                collect(value.get(key))
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                collect(item)
+
+    for value in values:
+        collect(value)
+    for candidate in candidates:
+        normalized_candidate = (
+            f"https:{candidate}" if candidate.startswith("//") else candidate
+        )
+        try:
+            image_url = normalize_optional_https_url(normalized_candidate, "image_url")
+        except (TypeError, ValueError):
+            continue
+        if image_url is not None:
+            return image_url
+    return None
 
 
 def _canonical_json_default(value: Any) -> str:

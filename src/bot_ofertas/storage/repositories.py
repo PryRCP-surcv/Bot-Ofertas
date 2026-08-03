@@ -795,6 +795,7 @@ class PriceObservationRepository:
             "title": observation.title,
             "brand": observation.brand,
             "model": observation.model,
+            "image_url": observation.image_url,
             "category_path": list(observation.category_path),
             "variant": dict(observation.variant),
             "condition": observation.condition,

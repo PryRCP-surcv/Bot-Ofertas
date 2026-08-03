@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 from urllib.parse import urlsplit
+
+from bot_ofertas.domain import normalize_optional_https_url
 
 _CURRENCY_PATTERN = re.compile(r"^[A-Z]{3}$")
 
@@ -60,6 +63,7 @@ class OfferNotification:
     currency: str
     reason: str
     product_url: str
+    image_url: str | None = None
     comparison_price: Decimal | None = None
     discount_percent: Decimal | None = None
     store_name: str | None = None
@@ -67,6 +71,7 @@ class OfferNotification:
     confidence_score: int | None = None
     confirmation_count: int | None = None
     conditions: tuple[str, ...] | list[str] = ()
+    variant_summary: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -119,11 +124,21 @@ class OfferNotification:
             "conditions",
             _text_tuple(self.conditions, "conditions"),
         )
+        if self.variant_summary is not None:
+            variant_summary = " ".join(self.variant_summary.split())
+            if len(variant_summary) > 500:
+                raise ValueError("variant_summary must not exceed 500 characters")
+            object.__setattr__(self, "variant_summary", variant_summary or None)
 
         parsed_url = urlsplit(self.product_url.strip())
         if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
             raise ValueError("product_url must be an absolute HTTP or HTTPS URL")
         object.__setattr__(self, "product_url", self.product_url.strip())
+        object.__setattr__(
+            self,
+            "image_url",
+            normalize_optional_https_url(self.image_url, "image_url"),
+        )
 
         if self.store_name is not None:
             normalized_store = self.store_name.strip()
@@ -148,16 +163,55 @@ class NotificationResult:
     detail: str | None = None
     retryable: bool | None = None
     retry_after_seconds: int | None = None
+    delivery_method: str | None = None
 
     def __post_init__(self) -> None:
         if self.retryable is not None and not isinstance(self.retryable, bool):
             raise TypeError("retryable must be a boolean or None")
         if self.retry_after_seconds is not None and self.retry_after_seconds <= 0:
             raise ValueError("retry_after_seconds must be positive")
+        if self.delivery_method is not None:
+            normalized_method = self.delivery_method.strip().casefold()
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", normalized_method):
+                raise ValueError("delivery_method must be a short identifier")
+            object.__setattr__(self, "delivery_method", normalized_method)
 
     @property
     def sent(self) -> bool:
         return self.status is NotificationStatus.SENT
+
+
+@dataclass(frozen=True, slots=True)
+class NotificationRoute:
+    """Auditable destination selected before a durable delivery is created."""
+
+    channel: str
+    provider: str
+    audience: str
+    dispatch_mode: str
+    routing_rule: str
+    routing_reason: str
+    delay: timedelta = timedelta(0)
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "channel",
+            "provider",
+            "audience",
+            "dispatch_mode",
+            "routing_rule",
+            "routing_reason",
+        ):
+            normalized = _required_text(getattr(self, field_name), field_name).casefold()
+            object.__setattr__(self, field_name, normalized)
+        if self.dispatch_mode not in {"immediate", "mirrored", "delayed"}:
+            raise ValueError("dispatch_mode must be immediate, mirrored, or delayed")
+        if self.delay < timedelta(0) or self.delay > timedelta(days=7):
+            raise ValueError("delay must be between zero and seven days")
+        if self.dispatch_mode == "delayed" and self.delay <= timedelta(0):
+            raise ValueError("delayed routes require a positive delay")
+        if self.dispatch_mode != "delayed" and self.delay != timedelta(0):
+            raise ValueError("only delayed routes may define a delay")
 
 
 @runtime_checkable
@@ -178,6 +232,7 @@ class NotificationChannel(Protocol):
 
 __all__ = [
     "NotificationChannel",
+    "NotificationRoute",
     "NotificationResult",
     "NotificationStatus",
     "OfferNotification",

@@ -6,6 +6,7 @@ import bot_ofertas.runtime_config as runtime_config
 from bot_ofertas.runtime_config import RuntimeSettings
 
 _RUNTIME_ENV_NAMES = (
+    "BOT_ANALYSIS_LIMIT",
     "BOT_ALERT_COOLDOWN_HOURS",
     "BOT_ALERT_MIN_CONFIDENCE",
     "BOT_ALERT_SIGNIFICANT_IMPROVEMENT_PERCENT",
@@ -29,6 +30,7 @@ _RUNTIME_ENV_NAMES = (
     "BOT_PRICE_ERROR_MIN_CONFIDENCE",
     "BOT_PRICE_ERROR_MIN_CORROBORATING_SIGNALS",
     "BOT_SCHEDULER_POLL_SECONDS",
+    "BOT_VERIFIED_LIST_PRICE_ALERT_PERCENT",
     "BOT_WATCHDOG_GRACE_SECONDS",
     "BOT_WATCHDOG_POLL_SECONDS",
     "TELEGRAM_ADMIN_CHAT_ID",
@@ -49,6 +51,7 @@ def test_runtime_settings_load_safe_defaults() -> None:
     settings = RuntimeSettings.from_env()
 
     assert settings.scheduler_poll_seconds == 300
+    assert settings.analysis_limit == 1_000
     assert settings.detector_version == "phase3-v2"
     assert settings.detection_history_limit == 2_500
     assert settings.detection_history_days == 90
@@ -59,6 +62,7 @@ def test_runtime_settings_load_safe_defaults() -> None:
     assert settings.confirmation_price_tolerance_ratio == Decimal("0.03")
     assert settings.confirmation_confidence_bonus == 20
     assert settings.minimum_alert_confidence == 50
+    assert settings.verified_list_price_alert_ratio == Decimal("0.35")
     assert settings.alert_significant_improvement_ratio == Decimal("0.05")
     assert settings.telegram_token is None
     assert settings.telegram_admin_chat_id is None
@@ -75,6 +79,7 @@ def test_runtime_settings_load_phase3_policy_thresholds_and_telegram(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("BOT_DETECTOR_VERSION", "phase3-experiment")
+    monkeypatch.setenv("BOT_ANALYSIS_LIMIT", "1500")
     monkeypatch.setenv("BOT_DETECTION_HISTORY_LIMIT", "9000")
     monkeypatch.setenv("BOT_DETECTION_HISTORY_DAYS", "365")
     monkeypatch.setenv("BOT_EQUIVALENT_MAX_AGE_HOURS", "48")
@@ -86,6 +91,7 @@ def test_runtime_settings_load_phase3_policy_thresholds_and_telegram(
     monkeypatch.setenv("BOT_CONFIRMATION_PRICE_TOLERANCE_PERCENT", "2.5")
     monkeypatch.setenv("BOT_CONFIRMATION_CONFIDENCE_BONUS", "15")
     monkeypatch.setenv("BOT_ALERT_MIN_CONFIDENCE", "65")
+    monkeypatch.setenv("BOT_VERIFIED_LIST_PRICE_ALERT_PERCENT", "45")
     monkeypatch.setenv("BOT_PRICE_ERROR_MIN_CORROBORATING_SIGNALS", "3")
     monkeypatch.setenv("BOT_PRICE_ERROR_MIN_CONFIDENCE", "75")
     monkeypatch.setenv("BOT_DEAL_GOOD_PERCENT", "25")
@@ -100,6 +106,7 @@ def test_runtime_settings_load_phase3_policy_thresholds_and_telegram(
     settings = RuntimeSettings.from_env()
 
     assert settings.detector_version == "phase3-experiment"
+    assert settings.analysis_limit == 1_500
     assert settings.detection_history_limit == 9_000
     assert settings.detection_history_days == 365
     assert settings.equivalent_max_age_hours == 48
@@ -109,6 +116,7 @@ def test_runtime_settings_load_phase3_policy_thresholds_and_telegram(
     assert settings.confirmation_price_tolerance_ratio == Decimal("0.025")
     assert settings.confirmation_confidence_bonus == 15
     assert settings.minimum_alert_confidence == 65
+    assert settings.verified_list_price_alert_ratio == Decimal("0.45")
     thresholds = settings.detector_config.list_price_thresholds
     assert thresholds.good_deal == Decimal("0.25")
     assert thresholds.exceptional_deal == Decimal("0.5")
@@ -139,6 +147,8 @@ def test_runtime_settings_reject_invalid_threshold_order(
     ("name", "value"),
     [
         ("BOT_DETECTION_HISTORY_LIMIT", "2"),
+        ("BOT_ANALYSIS_LIMIT", "99"),
+        ("BOT_ANALYSIS_LIMIT", "5001"),
         ("BOT_DETECTION_HISTORY_LIMIT", "10001"),
         ("BOT_DETECTION_HISTORY_DAYS", "29"),
         ("BOT_DETECTION_HISTORY_DAYS", "3651"),
@@ -207,8 +217,9 @@ def test_runtime_policy_snapshot_excludes_credentials_and_is_canonical() -> None
     policy = settings.public_policy()
 
     assert policy["good_deal_percent"] == "20"
-    assert policy["exceptional_deal_percent"] == "40"
+    assert policy["exceptional_deal_percent"] == "35"
     assert policy["possible_price_error_percent"] == "70"
+    assert policy["verified_list_price_alert_percent"] == "35"
     assert "telegram_token" not in policy
     assert "telegram_chat_id" not in policy
     assert len(settings.policy_fingerprint) == 64
@@ -224,6 +235,7 @@ def test_runtime_policy_overrides_are_validated_and_revisioned() -> None:
             "exceptional_deal_percent": "50",
             "possible_price_error_percent": "80",
             "minimum_history_samples": 5,
+            "verified_list_price_alert_percent": "45",
             "telegram_enabled": False,
         },
         revision_id=7,
@@ -234,6 +246,7 @@ def test_runtime_policy_overrides_are_validated_and_revisioned() -> None:
     assert thresholds.exceptional_deal == Decimal("0.50")
     assert thresholds.possible_price_error == Decimal("0.80")
     assert updated.detector_config.minimum_history_samples == 5
+    assert updated.verified_list_price_alert_ratio == Decimal("0.45")
     assert updated.telegram_enabled is False
     assert updated.policy_revision_id == 7
     assert updated.policy_fingerprint != base.policy_fingerprint
@@ -244,6 +257,7 @@ def test_non_detection_policy_does_not_change_detection_fingerprint() -> None:
 
     updated = base.with_policy_overrides(
         {
+            "analysis_limit": 1_500,
             "scheduler_poll_seconds": 900,
             "notification_retry_base_seconds": 600,
             "telegram_enabled": False,
@@ -251,6 +265,7 @@ def test_non_detection_policy_does_not_change_detection_fingerprint() -> None:
     )
 
     assert updated.policy_fingerprint == base.policy_fingerprint
+    assert updated.analysis_limit == 1_500
 
 
 @pytest.mark.parametrize(

@@ -17,6 +17,7 @@ from bot_ofertas.domain import PriceObservation
 from bot_ofertas.runtime_config import RuntimeSettings
 from bot_ofertas.storage.detections import DetectionRepository
 from bot_ofertas.storage.models import PriceObservationRecord, TrackedProduct
+from bot_ofertas.stores import get_store_registry
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,10 +81,19 @@ class DetectionService:
                         max_age_hours=self._settings.equivalent_max_age_hours,
                         limit=self._settings.equivalent_limit,
                     )
-                    ambiguous_variants = (
+                    multiple_unselected_variants = (
                         tracked_product is not None
                         and not tracked_product.expected_variant
                         and repository.has_ambiguous_variants(record)
+                    )
+                    allow_all_exact_variants = (
+                        multiple_unselected_variants
+                        and get_store_registry()
+                        .get(record.store_slug)
+                        .policy.allow_all_exact_variants
+                    )
+                    ambiguous_variants = (
+                        multiple_unselected_variants and not allow_all_exact_variants
                     )
                     current = _domain_observation(record)
                     history = [_domain_observation(item) for item in history_records]
@@ -100,7 +110,7 @@ class DetectionService:
                             item.price for item in equivalent_records if item.price is not None
                         ),
                     )
-                    if decision.is_valid:
+                    if decision.is_valid and not allow_all_exact_variants:
                         _learn_first_variant(tracked_product, record)
                     confirmation_interval_minutes = (
                         tracked_product.check_interval_minutes
@@ -110,6 +120,11 @@ class DetectionService:
                     confirmation_max_age_minutes = max(
                         self._settings.confirmation_max_age_minutes,
                         confirmation_interval_minutes * 2,
+                    )
+                    latest_snapshot = repository.is_latest_snapshot(record)
+                    variant_notification_representative = (
+                        not allow_all_exact_variants
+                        or repository.is_variant_group_representative(record)
                     )
                     result = repository.save(
                         observation=record,
@@ -133,7 +148,14 @@ class DetectionService:
                             self._settings.confirmation_confidence_bonus
                         ),
                         minimum_alert_confidence=(self._settings.minimum_alert_confidence),
-                        allow_notification=repository.is_latest_snapshot(record),
+                        verified_list_price_alert_ratio=(
+                            self._settings.verified_list_price_alert_ratio
+                        ),
+                        routes=self._settings.telegram_offer_routes(),
+                        allow_notification=(
+                            latest_snapshot and variant_notification_representative
+                        ),
+                        allow_confirmation_state_change=latest_snapshot,
                     )
             except Exception as error:
                 with self._session.begin_nested():
@@ -217,6 +239,7 @@ def _domain_observation(record: PriceObservationRecord) -> PriceObservation:
         title=record.title,
         brand=record.brand,
         model=record.model,
+        image_url=record.image_url,
         category_path=list(record.category_path),
         variant=dict(record.variant),
         condition=record.condition,

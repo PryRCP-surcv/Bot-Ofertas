@@ -108,6 +108,60 @@ def test_watchdog_parser_accepts_operational_timing() -> None:
     assert args.grace_seconds == 240
 
 
+def test_expanded_crawl_capacity_is_the_default_and_remains_bounded() -> None:
+    crawl = _build_parser().parse_args(["crawl"])
+    cycle = _build_parser().parse_args(["cycle"])
+    maximum = _build_parser().parse_args(["crawl", "--limit", "300"])
+
+    assert crawl.limit == 90
+    assert cycle.crawl_limit == 90
+    assert maximum.limit == 300
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["crawl", "--limit", "301"])
+
+
+def test_analysis_capacity_uses_policy_by_default_and_accepts_recovery_limit() -> None:
+    cycle = _build_parser().parse_args(["cycle"])
+    recovery = _build_parser().parse_args(
+        ["cycle", "--analysis-limit", "5000"]
+    )
+
+    assert cycle.analysis_limit is None
+    assert recovery.analysis_limit == 5_000
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(
+            ["cycle", "--analysis-limit", "5001"]
+        )
+
+
+def test_expanded_catalog_target_is_the_default_and_remains_bounded() -> None:
+    defaults = _build_parser().parse_args(["discovery", "expand"])
+    maximum = _build_parser().parse_args(
+        ["discovery", "expand", "--target-active", "1500", "--limit", "1500"]
+    )
+
+    assert defaults.target_active == 1_500
+    assert defaults.limit == 1_000
+    assert maximum.target_active == 1_500
+    assert maximum.limit == 1_500
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["discovery", "expand", "--limit", "1501"])
+
+
+@pytest.mark.parametrize(
+    "store_slug",
+    ("casaideas", "estilos", "footloose", "metro", "tottus", "wong"),
+)
+def test_discovery_parser_accepts_each_expansion_store(store_slug: str) -> None:
+    args = _build_parser().parse_args(
+        ["discovery", "run", "--store", store_slug, "--force"]
+    )
+
+    assert args.discovery_command == "run"
+    assert args.store == store_slug
+    assert args.force is True
+
+
 def test_quality_flags_separate_useful_conditions_from_blocking_warnings() -> None:
     conditions, blocking = _quality_flag_labels(
         [

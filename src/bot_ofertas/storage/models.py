@@ -365,7 +365,8 @@ class DiscoverySource(Base):
             name="ck_discovery_sources_type",
         ),
         CheckConstraint(
-            "url_entry_filter IN ('all', 'has_image')",
+            "url_entry_filter IN "
+            "('all', 'has_image', 'exclude_placeholder_slugs')",
             name="ck_discovery_sources_url_entry_filter",
         ),
         CheckConstraint(
@@ -1772,6 +1773,10 @@ class PriceObservationRecord(Base):
             "available_quantity IS NULL OR available_quantity >= 0",
             name="ck_price_observations_quantity_non_negative",
         ),
+        CheckConstraint(
+            "image_url IS NULL OR image_url ~ '^https://[^[:space:]]+$'",
+            name="ck_price_observations_image_https",
+        ),
         Index(
             "ix_price_observations_offer_history",
             "tracked_product_id",
@@ -1821,6 +1826,7 @@ class PriceObservationRecord(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False)
     brand: Mapped[str | None] = mapped_column(String(300))
     model: Mapped[str | None] = mapped_column(String(300))
+    image_url: Mapped[str | None] = mapped_column(Text)
     category_path: Mapped[list[str]] = mapped_column(
         JSONB,
         nullable=False,
@@ -2297,6 +2303,27 @@ class NotificationDelivery(Base):
             "channel <> ''",
             name="ck_notification_deliveries_channel_non_empty",
         ),
+        CheckConstraint(
+            "provider <> '' AND audience <> ''",
+            name="ck_notification_deliveries_route_non_empty",
+        ),
+        CheckConstraint(
+            "dispatch_mode IN ('immediate', 'mirrored', 'delayed')",
+            name="ck_notification_deliveries_dispatch_mode",
+        ),
+        CheckConstraint(
+            "routing_rule <> ''",
+            name="ck_notification_deliveries_routing_rule_non_empty",
+        ),
+        CheckConstraint(
+            "scheduled_for >= routed_at",
+            name="ck_notification_deliveries_schedule_order",
+        ),
+        CheckConstraint(
+            "delivery_method IS NULL OR delivery_method IN "
+            "('photo_url', 'photo_upload', 'text', 'text_fallback')",
+            name="ck_notification_deliveries_method",
+        ),
         Index(
             "ix_notification_deliveries_scheduler",
             "channel",
@@ -2304,6 +2331,12 @@ class NotificationDelivery(Base):
             "next_attempt_at",
             "lease_expires_at",
             postgresql_where=text("status IN ('pending', 'retrying')"),
+        ),
+        Index(
+            "ix_notification_deliveries_audience_sent",
+            "provider",
+            "audience",
+            "sent_at",
         ),
     )
 
@@ -2318,6 +2351,43 @@ class NotificationDelivery(Base):
         nullable=False,
     )
     channel: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="telegram",
+        server_default=text("'telegram'"),
+    )
+    audience: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="free",
+        server_default=text("'free'"),
+    )
+    dispatch_mode: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="immediate",
+        server_default=text("'immediate'"),
+    )
+    routing_rule: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+        default="legacy_single_chat",
+        server_default=text("'legacy_single_chat'"),
+    )
+    routing_reason: Mapped[str | None] = mapped_column(Text)
+    routed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
+    scheduled_for: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
+    )
     status: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
@@ -2339,6 +2409,7 @@ class NotificationDelivery(Base):
     lease_token: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     provider_message_id: Mapped[str | None] = mapped_column(String(300))
+    delivery_method: Mapped[str | None] = mapped_column(String(32))
     last_error_code: Mapped[str | None] = mapped_column(String(100))
     last_error: Mapped[str | None] = mapped_column(Text)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

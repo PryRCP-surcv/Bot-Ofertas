@@ -13,10 +13,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from bot_ofertas.detection import DetectorConfig, SignalThresholds
+from bot_ofertas.notifications import NotificationRoute
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _EDITABLE_POLICY_KEYS = frozenset(
     {
+        "analysis_limit",
         "scheduler_poll_seconds",
         "detection_history_limit",
         "detection_history_days",
@@ -27,6 +29,7 @@ _EDITABLE_POLICY_KEYS = frozenset(
         "confirmation_price_tolerance_percent",
         "confirmation_confidence_bonus",
         "minimum_alert_confidence",
+        "verified_list_price_alert_percent",
         "alert_cooldown_hours",
         "alert_significant_improvement_percent",
         "notification_lease_seconds",
@@ -44,6 +47,7 @@ _EDITABLE_POLICY_KEYS = frozenset(
 )
 _DETECTION_POLICY_KEYS = _EDITABLE_POLICY_KEYS.difference(
     {
+        "analysis_limit",
         "scheduler_poll_seconds",
         "notification_lease_seconds",
         "notification_max_attempts",
@@ -51,6 +55,20 @@ _DETECTION_POLICY_KEYS = _EDITABLE_POLICY_KEYS.difference(
         "telegram_enabled",
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramDestinationSettings:
+    """Safe runtime identity for one Telegram audience destination."""
+
+    channel: str
+    audience: str
+    chat_id: str | None = field(default=None, repr=False)
+    dispatch_mode: str = "immediate"
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.chat_id)
 
 
 def _integer(name: str, default: int, *, minimum: int, maximum: int) -> int:
@@ -154,6 +172,7 @@ class RuntimeSettings:
     """Operational settings whose defaults are safe for the local Phase 3 monitor."""
 
     scheduler_poll_seconds: int = 300
+    analysis_limit: int = 1_000
     detector_version: str = "phase3-v2"
     detection_history_limit: int = 2_500
     detection_history_days: int = 90
@@ -164,6 +183,7 @@ class RuntimeSettings:
     confirmation_price_tolerance_ratio: Decimal = Decimal("0.03")
     confirmation_confidence_bonus: int = 20
     minimum_alert_confidence: int = 50
+    verified_list_price_alert_ratio: Decimal = Decimal("0.35")
     alert_cooldown_hours: int = 24
     alert_significant_improvement_ratio: Decimal = Decimal("0.05")
     notification_lease_seconds: int = 120
@@ -172,6 +192,10 @@ class RuntimeSettings:
     telegram_token: str | None = field(default=None, repr=False)
     telegram_chat_id: str | None = None
     telegram_admin_chat_id: str | None = field(default=None, repr=False)
+    telegram_free_chat_id: str | None = None
+    telegram_vip_chat_id: str | None = None
+    telegram_operations_chat_id: str | None = field(default=None, repr=False)
+    telegram_vip_mirror_enabled: bool = True
     telegram_enabled: bool = True
     watchdog_poll_seconds: int = 60
     watchdog_grace_seconds: int = 180
@@ -183,7 +207,7 @@ class RuntimeSettings:
         load_dotenv(_PROJECT_ROOT / ".env", override=False)
 
         good = _decimal_ratio("BOT_DEAL_GOOD_PERCENT", "20")
-        exceptional = _decimal_ratio("BOT_DEAL_EXCEPTIONAL_PERCENT", "40")
+        exceptional = _decimal_ratio("BOT_DEAL_EXCEPTIONAL_PERCENT", "35")
         possible_error = _decimal_ratio("BOT_DEAL_PRICE_ERROR_PERCENT", "70")
         thresholds = SignalThresholds(
             good_deal=good,
@@ -192,12 +216,25 @@ class RuntimeSettings:
         )
 
         token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or None
-        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip() or None
+        legacy_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip() or None
+        free_chat_id = (
+            os.environ.get("TELEGRAM_FREE_CHAT_ID", "").strip()
+            or legacy_chat_id
+        )
+        vip_chat_id = os.environ.get("TELEGRAM_VIP_CHAT_ID", "").strip() or None
         admin_chat_id = (
-            os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "").strip() or chat_id
+            os.environ.get("TELEGRAM_OPERATIONS_CHAT_ID", "").strip()
+            or os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "").strip()
+            or free_chat_id
         )
         return cls(
             detector_version=_required_text("BOT_DETECTOR_VERSION", "phase3-v2"),
+            analysis_limit=_integer(
+                "BOT_ANALYSIS_LIMIT",
+                1_000,
+                minimum=100,
+                maximum=5_000,
+            ),
             scheduler_poll_seconds=_integer(
                 "BOT_SCHEDULER_POLL_SECONDS",
                 300,
@@ -254,6 +291,10 @@ class RuntimeSettings:
                 minimum=0,
                 maximum=100,
             ),
+            verified_list_price_alert_ratio=_decimal_ratio(
+                "BOT_VERIFIED_LIST_PRICE_ALERT_PERCENT",
+                "35",
+            ),
             alert_cooldown_hours=_integer(
                 "BOT_ALERT_COOLDOWN_HOURS",
                 24,
@@ -283,8 +324,15 @@ class RuntimeSettings:
                 maximum=86_400,
             ),
             telegram_token=token,
-            telegram_chat_id=chat_id,
+            telegram_chat_id=free_chat_id,
             telegram_admin_chat_id=admin_chat_id,
+            telegram_free_chat_id=free_chat_id,
+            telegram_vip_chat_id=vip_chat_id,
+            telegram_operations_chat_id=admin_chat_id,
+            telegram_vip_mirror_enabled=_boolean(
+                "TELEGRAM_VIP_MIRROR_ENABLED",
+                True,
+            ),
             telegram_enabled=_boolean("TELEGRAM_ENABLED", True),
             watchdog_poll_seconds=_integer(
                 "BOT_WATCHDOG_POLL_SECONDS",
@@ -330,11 +378,78 @@ class RuntimeSettings:
             ),
         )
 
+    @property
+    def effective_telegram_free_chat_id(self) -> str | None:
+        """Return the Phase 6.7 free destination with legacy fallback."""
+
+        return self.telegram_free_chat_id or self.telegram_chat_id
+
+    @property
+    def effective_telegram_operations_chat_id(self) -> str | None:
+        """Return the private operations destination with legacy fallback."""
+
+        return (
+            self.telegram_operations_chat_id
+            or self.telegram_admin_chat_id
+            or self.effective_telegram_free_chat_id
+        )
+
+    def telegram_offer_routes(self) -> tuple[NotificationRoute, ...]:
+        """Return durable offer routes enabled by non-secret destination settings."""
+
+        routes: list[NotificationRoute] = []
+        for destination in self.telegram_offer_destinations():
+            is_free = destination.audience == "free"
+            routes.append(
+                NotificationRoute(
+                    channel=destination.channel,
+                    provider="telegram",
+                    audience=destination.audience,
+                    dispatch_mode=destination.dispatch_mode,
+                    routing_rule=(
+                        "phase6.7a_free_primary"
+                        if is_free
+                        else "phase6.7a_vip_mirror"
+                    ),
+                    routing_reason=(
+                        "oferta confirmada enviada al canal gratuito principal"
+                        if is_free
+                        else "espejo de validación previo a las reglas comerciales 6.7B"
+                    ),
+                )
+            )
+        return tuple(routes)
+
+    def telegram_offer_destinations(
+        self,
+    ) -> tuple[TelegramDestinationSettings, ...]:
+        """Return configured audiences without exposing them through public policy."""
+
+        destinations = [
+            TelegramDestinationSettings(
+                channel="telegram_free",
+                audience="free",
+                chat_id=self.effective_telegram_free_chat_id,
+                dispatch_mode="immediate",
+            )
+        ]
+        if self.telegram_vip_chat_id and self.telegram_vip_mirror_enabled:
+            destinations.append(
+                TelegramDestinationSettings(
+                    channel="telegram_vip",
+                    audience="vip",
+                    chat_id=self.telegram_vip_chat_id,
+                    dispatch_mode="mirrored",
+                )
+            )
+        return tuple(destinations)
+
     def public_policy(self) -> dict[str, int | bool | str]:
         """Return the complete editable policy without any credentials."""
 
         thresholds = self.detector_config.list_price_thresholds
         return {
+            "analysis_limit": self.analysis_limit,
             "scheduler_poll_seconds": self.scheduler_poll_seconds,
             "detection_history_limit": self.detection_history_limit,
             "detection_history_days": self.detection_history_days,
@@ -347,6 +462,9 @@ class RuntimeSettings:
             ),
             "confirmation_confidence_bonus": self.confirmation_confidence_bonus,
             "minimum_alert_confidence": self.minimum_alert_confidence,
+            "verified_list_price_alert_percent": _percent_text(
+                self.verified_list_price_alert_ratio
+            ),
             "alert_cooldown_hours": self.alert_cooldown_hours,
             "alert_significant_improvement_percent": _percent_text(
                 self.alert_significant_improvement_ratio
@@ -461,6 +579,13 @@ class RuntimeSettings:
         )
         return replace(
             self,
+            analysis_limit=_mapping_integer(
+                current,
+                "analysis_limit",
+                self.analysis_limit,
+                minimum=100,
+                maximum=5_000,
+            ),
             scheduler_poll_seconds=_mapping_integer(
                 current,
                 "scheduler_poll_seconds",
@@ -527,6 +652,11 @@ class RuntimeSettings:
                 minimum=0,
                 maximum=100,
             ),
+            verified_list_price_alert_ratio=_mapping_ratio(
+                current,
+                "verified_list_price_alert_percent",
+                self.verified_list_price_alert_ratio,
+            ),
             alert_cooldown_hours=_mapping_integer(
                 current,
                 "alert_cooldown_hours",
@@ -570,4 +700,4 @@ class RuntimeSettings:
         )
 
 
-__all__ = ["RuntimeSettings"]
+__all__ = ["RuntimeSettings", "TelegramDestinationSettings"]

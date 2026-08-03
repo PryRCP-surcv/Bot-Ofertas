@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import pytest
 
+from bot_ofertas.crawling.spiders.sitemap_discovery import (
+    _has_placeholder_path_segment,
+)
 from bot_ofertas.discovery import (
     SitemapDocumentError,
     label_from_product_url,
@@ -88,19 +91,38 @@ def test_urlset_identifies_image_backed_entries_in_a_mixed_magento_sitemap() -> 
     )
 
 
+def test_placeholder_product_slugs_can_be_filtered_without_rejecting_valid_urls() -> None:
+    assert _has_placeholder_path_segment(
+        "https://www.tottus.com.pe/tottus-pe/articulo/100/null/101"
+    )
+    assert _has_placeholder_path_segment(
+        "https://www.tottus.com.pe/tottus-pe/articulo/100/undefined/101"
+    )
+    assert not _has_placeholder_path_segment(
+        "https://www.tottus.com.pe/tottus-pe/articulo/100/producto-valido/101"
+    )
+
+
 def test_builtin_adapters_declare_daily_bounded_sitemap_sources() -> None:
     registry = build_store_registry(include_plugins=False)
 
     assert {adapter.slug for adapter in registry.adapters} == {
         "cassinelli",
+        "casaideas",
         "coolbox",
         "curacao",
         "efe",
+        "estilos",
+        "falabella",
+        "footloose",
+        "metro",
         "oechsle",
         "plazavea",
         "promart",
         "topitop",
+        "tottus",
         "vega",
+        "wong",
     }
     for adapter in registry.adapters:
         assert len(adapter.discovery_sources) == 1
@@ -109,5 +131,10 @@ def test_builtin_adapters_declare_daily_bounded_sitemap_sources() -> None:
         assert source.minimum_interval_minutes >= 1_440
         assert source.max_documents_per_run == 2
         assert source.max_candidates_per_run <= 100
-        assert source.daily_approval_limit == 40
-        assert source.url_entry_filter in {"all", "has_image"}
+        expected_daily_limit = 20 if adapter.slug == "falabella" else 40
+        assert source.daily_approval_limit == expected_daily_limit
+        assert source.url_entry_filter in {
+            "all",
+            "exclude_placeholder_slugs",
+            "has_image",
+        }

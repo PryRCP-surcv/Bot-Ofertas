@@ -17,6 +17,8 @@ from uuid import UUID
 from parsel import Selector
 from scrapy.http import Response
 
+from bot_ofertas.domain import normalize_optional_https_url
+
 
 class MagentoPayloadError(ValueError):
     """Raised when a reviewed product page no longer exposes consistent evidence."""
@@ -102,6 +104,7 @@ def parse_magento_product(
     title = _required_text(product.get("name"), "product name", config=config)
     sku = _required_text(product.get("sku"), "product SKU", config=config)
     brand = _brand(product.get("brand"))
+    image_url = _first_https_image(product.get("image"))
     seller_name = _seller_name(offer.get("seller"))
     quality_flags: list[str] = []
     if seller_name is None:
@@ -182,6 +185,7 @@ def parse_magento_product(
             "title": title,
             "brand": brand,
             "model": None,
+            "image_url": image_url,
             "category_path": category_path,
             "variant": {},
             "condition": condition,
@@ -198,6 +202,35 @@ def parse_magento_product(
             "quality_flags": list(dict.fromkeys(quality_flags)),
         }
     ]
+
+
+def _first_https_image(value: Any) -> str | None:
+    """Read Schema.org image strings, arrays, or ImageObject values safely."""
+
+    candidates: list[str] = []
+
+    def collect(candidate: Any) -> None:
+        if isinstance(candidate, str):
+            candidates.append(candidate)
+        elif isinstance(candidate, Mapping):
+            for key in ("url", "contentUrl", "thumbnailUrl"):
+                collect(candidate.get(key))
+        elif isinstance(candidate, (list, tuple)):
+            for item in candidate:
+                collect(item)
+
+    collect(value)
+    for candidate in candidates:
+        normalized_candidate = (
+            f"https:{candidate}" if candidate.startswith("//") else candidate
+        )
+        try:
+            image_url = normalize_optional_https_url(normalized_candidate, "image_url")
+        except (TypeError, ValueError):
+            continue
+        if image_url is not None:
+            return image_url
+    return None
 
 
 def _matching_product(

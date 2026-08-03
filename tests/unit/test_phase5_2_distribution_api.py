@@ -56,7 +56,7 @@ def _client(monkeypatch) -> TestClient:
     monkeypatch.setattr(
         routes,
         "send_telegram_beta_test",
-        lambda _session: TelegramTestRead(
+        lambda _session, **_kwargs: TelegramTestRead(
             status="sent",
             sent=True,
             message_id="88",
@@ -86,6 +86,7 @@ def test_distribution_routes_are_admin_only_and_never_expose_chat_identity(
     assert "chat_id" not in status.text
     assert test.status_code == 200
     assert test.json() == {
+        "destination": "telegram_free",
         "status": "sent",
         "sent": True,
         "message_id": "88",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import scrapy
 from scrapy.exceptions import CloseSpider
@@ -73,7 +73,11 @@ class SitemapDiscoverySpider(scrapy.Spider):
             maximum=500,
         )
         self.child_path_pattern = child_path_pattern
-        if url_entry_filter not in {"all", "has_image"}:
+        if url_entry_filter not in {
+            "all",
+            "exclude_placeholder_slugs",
+            "has_image",
+        }:
             raise ValueError("invalid sitemap URL entry filter")
         self.url_entry_filter = url_entry_filter
         self.requested_by = requested_by
@@ -155,6 +159,16 @@ class SitemapDiscoverySpider(scrapy.Spider):
                 "has_image",
             )
             return document.image_locations
+        if self.url_entry_filter == "exclude_placeholder_slugs":
+            self.crawler.stats.set_value(
+                "bot_ofertas/discovery_url_filter",
+                "exclude_placeholder_slugs",
+            )
+            return tuple(
+                location
+                for location in document.locations
+                if not _has_placeholder_path_segment(location)
+            )
         return document.locations
 
     def _document(self, response: Response):
@@ -256,6 +270,18 @@ def _validate_request_url(url: str, allowed_hosts: frozenset[str]) -> str:
     ):
         raise ValueError("discovery requests must stay on a reviewed HTTPS host")
     return url
+
+
+def _has_placeholder_path_segment(url: str) -> bool:
+    try:
+        segments = [
+            unquote(segment).strip().casefold()
+            for segment in urlsplit(url).path.split("/")
+            if segment
+        ]
+    except ValueError:
+        return False
+    return any(segment in {"null", "undefined"} for segment in segments)
 
 
 def _contains_challenge(prefix: bytes) -> bool:

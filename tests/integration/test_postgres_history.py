@@ -45,6 +45,7 @@ def _observation(
         title="Producto de integración",
         brand="Marca",
         model="Modelo",
+        image_url="https://cdn.coolbox.pe/integration-product.jpg",
         category_path=["Tecnología"],
         variant={"Color": "Negro"},
         condition=ProductCondition.NEW,
@@ -131,6 +132,7 @@ def test_history_identity_is_idempotent_per_tracked_product() -> None:
         assert second.observation_id != first.observation_id
         assert latest_first is not None
         assert latest_first.price == Decimal("199.9000")
+        assert latest_first.image_url == "https://cdn.coolbox.pe/integration-product.jpg"
         assert latest_second is not None
         assert latest_second.price == Decimal("149.9000")
     finally:

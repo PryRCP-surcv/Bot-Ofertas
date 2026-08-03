@@ -4,7 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 
 import { ApiClient } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
-import type { TelegramDistributionStatusRead } from "@/lib/types";
+import type {
+  TelegramDestinationStatusRead,
+  TelegramDistributionStatusRead,
+} from "@/lib/types";
 
 import { PaperPlaneIcon, RefreshIcon } from "../components/icons";
 import { Button, EmptyState, LoadingBlock, StatusPill } from "../components/ui";
@@ -21,7 +24,7 @@ export function DistributionView({
   const [status, setStatus] =
     useState<TelegramDistributionStatusRead | null>(null);
   const [loading, setLoading] = useState(true);
-  const [testing, setTesting] = useState(false);
+  const [testingDestination, setTestingDestination] = useState("");
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -48,19 +51,24 @@ export function DistributionView({
     return () => window.clearTimeout(timer);
   }, [load, refreshNonce]);
 
-  async function sendTest() {
+  async function sendTest(destination: TelegramDestinationStatusRead) {
     if (
       !window.confirm(
-        "Se enviará un mensaje de prueba al grupo o canal configurado. ¿Continuar?",
+        `Se enviará un mensaje fijo al destino ${destination.audience.toUpperCase()}. ¿Continuar?`,
       )
     ) {
       return;
     }
-    setTesting(true);
+    setTestingDestination(destination.channel);
     try {
-      const response = await client.testTelegramDistribution();
+      const response = await client.testTelegramDistribution(
+        destination.channel as "telegram_free" | "telegram_vip",
+      );
       if (response.data.sent) {
-        onNotify("Telegram recibió correctamente el mensaje de prueba.", "success");
+        onNotify(
+          `Telegram ${destination.audience.toUpperCase()} recibió el mensaje de prueba.`,
+          "success",
+        );
       } else {
         onNotify(
           response.data.detail ??
@@ -77,12 +85,12 @@ export function DistributionView({
         "error",
       );
     } finally {
-      setTesting(false);
+      setTestingDestination("");
     }
   }
 
   if (loading && !status) {
-    return <LoadingBlock label="Consultando el canal beta" />;
+    return <LoadingBlock label="Consultando distribución y cobertura" />;
   }
 
   if (error && !status) {
@@ -101,51 +109,70 @@ export function DistributionView({
 
   const waiting =
     status.queue_counts.pending + status.queue_counts.retrying;
+  const failed = status.queue_counts.failed;
+  const free = status.destinations.find(
+    (destination) => destination.audience === "free",
+  );
 
   return (
     <div className="view-stack">
       {error ? <div className="inline-error">{error}</div> : null}
       <section className="distribution-hero">
         <div className="distribution-hero__copy">
-          <p className="section-kicker">Primera audiencia de pago</p>
-          <h2>Un solo grupo, alertas automáticas</h2>
+          <p className="section-kicker">Fase 6.7A · distribución auditable</p>
+          <h2>Un emisor, varios destinos independientes</h2>
           <p>
-            El monitor publica las ofertas confirmadas en el chat de Telegram
-            configurado. Tú controlas manualmente quién entra o sale del grupo
-            durante esta beta económica.
+            Cada oferta conserva su destino, regla, horario y resultado. El
+            canal gratuito continúa siendo el destino principal; el espejo VIP
+            se activa únicamente cuando configures su identificador.
           </p>
           <div className="distribution-hero__status">
             <StatusPill tone={status.ready ? "success" : "warning"}>
-              {status.ready ? "Canal listo" : "Configuración incompleta"}
+              {status.ready ? "Free operativo" : "Free incompleto"}
             </StatusPill>
             <span>
-              Membresías manuales · cobros externos · sin exponer credenciales
+              {status.destinations.length} destino
+              {status.destinations.length === 1 ? "" : "s"} · sin exponer
+              credenciales
             </span>
           </div>
         </div>
         <div className="distribution-hero__action">
           <PaperPlaneIcon />
-          <strong>Prueba el destino antes de invitar personas</strong>
+          <strong>Estado del canal principal</strong>
           <p>
-            El mensaje es fijo y no permite enviar contenido arbitrario desde el
-            panel.
+            {free?.last_sent_at
+              ? `Último envío: ${formatDateTime(free.last_sent_at)}`
+              : "Todavía no hay una entrega registrada."}
           </p>
-          <Button
-            disabled={testing || !status.ready}
-            onClick={() => void sendTest()}
-            type="button"
-          >
-            <RefreshIcon className={testing ? "spin" : ""} />
-            {testing ? "Enviando" : "Enviar prueba"}
+          <Button onClick={() => void load()} type="button">
+            <RefreshIcon className={loading ? "spin" : ""} />
+            Actualizar estado
           </Button>
         </div>
       </section>
 
-      <section className="distribution-metrics" aria-label="Estado de entregas">
+      <section className="distribution-metrics" aria-label="Estado de distribución">
         <DistributionMetric
-          detail="enviadas al destino beta"
-          label="Entregas correctas"
-          value={status.queue_counts.sent}
+          detail={`${status.coverage.successful_products_24h} de ${status.coverage.active_products} productos`}
+          label="Cobertura 24 h"
+          value={`${status.coverage.coverage_percent}%`}
+          warning={!status.coverage.meets_target}
+        />
+        <DistributionMetric
+          detail={
+            status.analysis_backlog.pending_observations
+              ? `${status.analysis_backlog.oldest_age_hours} h de antigüedad · ~${status.analysis_backlog.estimated_cycles} ciclo(s)`
+              : "sin observaciones atrasadas"
+          }
+          label="Pendientes de analizar"
+          value={status.analysis_backlog.pending_observations}
+          warning={status.analysis_backlog.warning}
+        />
+        <DistributionMetric
+          detail="ofertas únicas publicadas"
+          label="Alertas 24 h"
+          value={status.concentration.unique_alerts}
         />
         <DistributionMetric
           detail="pendientes o en reintento"
@@ -155,81 +182,145 @@ export function DistributionView({
         <DistributionMetric
           detail="agotaron sus intentos"
           label="Fallidas"
-          value={status.queue_counts.failed}
-          warning={status.queue_counts.failed > 0}
+          value={failed}
+          warning={failed > 0}
         />
       </section>
 
+      <section className="distribution-destinations">
+        {status.destinations.map((destination) => (
+          <article className="panel-card destination-card" key={destination.channel}>
+            <div className="panel-card__header">
+              <div>
+                <p className="section-kicker">
+                  Audiencia {destination.audience.toUpperCase()}
+                </p>
+                <h2>{destination.channel}</h2>
+              </div>
+              <StatusPill tone={destination.ready ? "success" : "warning"}>
+                {destination.ready ? "Listo" : "Sin configurar"}
+              </StatusPill>
+            </div>
+            <dl>
+              <div>
+                <dt>Modo</dt>
+                <dd>{dispatchModeLabel(destination.dispatch_mode)}</dd>
+              </div>
+              <div>
+                <dt>Enviadas 24 h</dt>
+                <dd>{destination.sent_24h}</dd>
+              </div>
+              <div>
+                <dt>Enviadas 7 días</dt>
+                <dd>{destination.sent_7d}</dd>
+              </div>
+              <div>
+                <dt>En cola</dt>
+                <dd>
+                  {destination.queue_counts.pending +
+                    destination.queue_counts.retrying}
+                </dd>
+              </div>
+            </dl>
+            <Button
+              disabled={
+                !destination.ready ||
+                testingDestination === destination.channel
+              }
+              onClick={() => void sendTest(destination)}
+              type="button"
+            >
+              <RefreshIcon
+                className={
+                  testingDestination === destination.channel ? "spin" : ""
+                }
+              />
+              {testingDestination === destination.channel
+                ? "Enviando"
+                : "Enviar prueba"}
+            </Button>
+          </article>
+        ))}
+      </section>
+
       <section className="distribution-layout">
-        <article className="panel-card distribution-flow">
+        <article className="panel-card distribution-breakdown">
           <div className="panel-card__header">
             <div>
-              <p className="section-kicker">Flujo comercial beta</p>
-              <h2>Cómo administrar suscriptores ahora</h2>
+              <p className="section-kicker">Últimas 24 horas</p>
+              <h2>Distribución por categoría</h2>
             </div>
+            <StatusPill
+              tone={status.concentration.warning ? "warning" : "success"}
+            >
+              {status.concentration.warning
+                ? "Concentración alta"
+                : "Sin concentración crítica"}
+            </StatusPill>
           </div>
-          <ol>
-            <li>
-              <span>1</span>
-              <div>
-                <strong>Confirmas el pago por tu medio elegido</strong>
-                <p>El bot no almacena tarjetas ni procesa cobros en esta etapa.</p>
-              </div>
-            </li>
-            <li>
-              <span>2</span>
-              <div>
-                <strong>Agregas o invitas a la persona en Telegram</strong>
-                <p>
-                  Mantén el grupo privado y elimina manualmente accesos vencidos.
-                </p>
-              </div>
-            </li>
-            <li>
-              <span>3</span>
-              <div>
-                <strong>El trabajador publica cada oferta confirmada</strong>
-                <p>
-                  La cola durable evita perder alertas ante fallos temporales.
-                </p>
-              </div>
-            </li>
-          </ol>
+          {status.concentration.categories.length ? (
+            <div className="distribution-bars">
+              {status.concentration.categories.map((category) => (
+                <div className="distribution-bar" key={category.key}>
+                  <div>
+                    <strong>{category.label}</strong>
+                    <span>
+                      {category.count} · {category.percentage}%
+                    </span>
+                  </div>
+                  <progress
+                    max="100"
+                    value={Number(category.percentage)}
+                  />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="muted-copy">
+              Todavía no hay alertas enviadas durante esta ventana.
+            </p>
+          )}
         </article>
 
         <aside className="panel-card distribution-health">
           <div className="panel-card__header">
             <div>
-              <p className="section-kicker">Última actividad</p>
-              <h2>Salud del canal</h2>
+              <p className="section-kicker">Objetivo operativo</p>
+              <h2>Cobertura por tienda</h2>
             </div>
           </div>
-          <dl>
-            <div>
-              <dt>Último envío</dt>
-              <dd>
-                {status.last_sent_at
-                  ? formatDateTime(status.last_sent_at)
-                  : "Todavía no hay entregas"}
-              </dd>
-            </div>
-            <div>
-              <dt>Último error</dt>
-              <dd>
-                {status.last_error_at
-                  ? formatDateTime(status.last_error_at)
-                  : "Sin errores registrados"}
-              </dd>
-            </div>
-            <div>
-              <dt>Detalle seguro</dt>
-              <dd>{status.last_error ?? "El canal opera sin incidencias."}</dd>
-            </div>
-          </dl>
+          <div className="coverage-list">
+            {status.coverage.stores.map((store) => (
+              <div className="coverage-row" key={store.store_slug}>
+                <div>
+                  <strong>{store.store_slug}</strong>
+                  <span>
+                    {store.successful_products_24h}/{store.active_products}
+                  </span>
+                </div>
+                <StatusPill tone={store.meets_target ? "success" : "warning"}>
+                  {store.coverage_percent}%
+                </StatusPill>
+              </div>
+            ))}
+          </div>
+          <p className="distribution-note">
+            Objetivo: {status.coverage.target_percent}% diario. Productos aún
+            clasificados como “Otros”:{" "}
+            {status.concentration.uncategorized_catalog_products}.
+          </p>
         </aside>
       </section>
     </div>
   );
+}
+
+function dispatchModeLabel(
+  mode: TelegramDestinationStatusRead["dispatch_mode"],
+) {
+  if (mode === "mirrored") return "Espejo de validación";
+  if (mode === "delayed") return "Entrega retrasada";
+  return "Inmediato";
 }
 
 function DistributionMetric({
@@ -240,11 +331,13 @@ function DistributionMetric({
 }: {
   detail: string;
   label: string;
-  value: number;
+  value: number | string;
   warning?: boolean;
 }) {
   return (
-    <article className={warning ? "distribution-metric warning" : "distribution-metric"}>
+    <article
+      className={warning ? "distribution-metric warning" : "distribution-metric"}
+    >
       <span>{label}</span>
       <strong>{value}</strong>
       <small>{detail}</small>

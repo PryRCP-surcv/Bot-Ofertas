@@ -18,6 +18,7 @@ from uuid import UUID
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _CURRENCY_PATTERN = re.compile(r"^[A-Z]{3}$")
+_MAX_MEDIA_URL_LENGTH = 2_048
 
 
 class ProductCondition(StrEnum):
@@ -52,6 +53,41 @@ def _optional_text(value: str | None) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def normalize_optional_https_url(
+    value: str | None,
+    field_name: str = "URL",
+) -> str | None:
+    """Normalize one optional, public HTTPS URL suitable for external media."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string or None")
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if len(normalized) > _MAX_MEDIA_URL_LENGTH:
+        raise ValueError(f"{field_name} must not exceed {_MAX_MEDIA_URL_LENGTH} characters")
+    if any(character.isspace() for character in normalized):
+        raise ValueError(f"{field_name} must not contain whitespace")
+    try:
+        parsed = urlsplit(normalized)
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError(f"{field_name} must be a valid HTTPS URL") from error
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+    ):
+        raise ValueError(
+            f"{field_name} must be an absolute HTTPS URL without credentials or custom ports"
+        )
+    return normalized
 
 
 def _decimal_or_none(value: Decimal | int | str | None, field_name: str) -> Decimal | None:
@@ -154,6 +190,7 @@ class PriceObservation:
     sku_reference: str | None = None
     brand: str | None = None
     model: str | None = None
+    image_url: str | None = None
     category_path: list[str] = field(default_factory=list)
     variant: dict[str, str] = field(default_factory=dict)
     price: Decimal | None = None
@@ -183,6 +220,7 @@ class PriceObservation:
         self.sku_reference = _optional_text(self.sku_reference)
         self.brand = _optional_text(self.brand)
         self.model = _optional_text(self.model)
+        self.image_url = normalize_optional_https_url(self.image_url, "image_url")
         self.condition = ProductCondition(self.condition)
         self.availability = Availability(self.availability)
         self.currency = _currency_code(self.currency)

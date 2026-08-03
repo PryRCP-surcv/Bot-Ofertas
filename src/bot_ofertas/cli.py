@@ -23,6 +23,12 @@ from scrapy.settings import Settings
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from bot_ofertas.catalog_balance import (
+    CATEGORY_LABELS,
+    BalanceEntry,
+    balanced_indices,
+    catalog_category,
+)
 from bot_ofertas.crawling import settings as crawling_settings
 from bot_ofertas.crawling.spiders.sitemap_discovery import SitemapDiscoverySpider
 from bot_ofertas.detection import assess_quality_flags, canonicalize_variant
@@ -32,6 +38,7 @@ from bot_ofertas.scheduling import LocalScheduler
 from bot_ofertas.services import (
     DetectionBatchSummary,
     DetectionService,
+    NotificationBatchSummary,
     NotificationDispatcher,
     WorkerHeartbeatLoop,
     WorkerStatusService,
@@ -45,7 +52,7 @@ from bot_ofertas.storage.database import (
     create_session_factory,
     session_scope,
 )
-from bot_ofertas.storage.discovery import DiscoveryRepository
+from bot_ofertas.storage.discovery import DiscoveryRepository, DiscoveryReviewError
 from bot_ofertas.storage.models import (
     CrawlJobItem,
     CrawlJobItemStatus,
@@ -54,6 +61,7 @@ from bot_ofertas.storage.models import (
     DiscoveryCandidate,
     DiscoveryCandidateStatus,
     DiscoverySource,
+    NotificationDelivery,
     OfferConfirmationState,
     PriceObservationRecord,
     StoreCrawlState,
@@ -69,16 +77,19 @@ from bot_ofertas.stores import StoreAdapter, get_store_registry, resolve_store
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _LIMA_TIMEZONE = ZoneInfo("America/Lima")
-_DEFAULT_CRAWL_LIMIT = 20
-_MAX_CRAWL_LIMIT = 20
+_DEFAULT_CRAWL_LIMIT = 90
+_MAX_CRAWL_LIMIT = 300
 _DEFAULT_HISTORY_LIMIT = 20
 _MAX_HISTORY_LIMIT = 500
-_DEFAULT_ANALYSIS_LIMIT = 100
-_MAX_ANALYSIS_LIMIT = 1_000
+_DEFAULT_ANALYSIS_LIMIT = 1_000
+_MAX_ANALYSIS_LIMIT = 5_000
 _DEFAULT_NOTIFICATION_LIMIT = 20
 _MAX_NOTIFICATION_LIMIT = 100
-_DEFAULT_DISCOVERY_LIMIT = 3
-_MAX_DISCOVERY_LIMIT = 3
+_DEFAULT_DISCOVERY_LIMIT = 8
+_MAX_DISCOVERY_LIMIT = 15
+_DEFAULT_CATALOG_TARGET = 1_500
+_DEFAULT_CATALOG_EXPANSION_LIMIT = 1_000
+_MAX_CATALOG_EXPANSION_LIMIT = 1_500
 _CRAWL_LEASE_DURATION = timedelta(hours=2)
 _CRAWL_JOB_LEASE_DURATION = timedelta(minutes=30)
 _CRAWL_JOB_HEARTBEAT_SECONDS = 60
@@ -250,16 +261,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     discovery_run.add_argument(
         "--store",
-        choices=(
-            "cassinelli",
-            "coolbox",
-            "curacao",
-            "efe",
-            "oechsle",
-            "plazavea",
-            "promart",
-            "topitop",
-            "vega",
+        choices=tuple(
+            adapter.slug
+            for adapter in get_store_registry().enabled_adapters
         ),
         help="Limita la ejecución a una tienda registrada.",
     )
@@ -316,6 +320,29 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="UUID",
     )
     discovery_reject.add_argument("--reason", required=True, help="Motivo del rechazo.")
+    discovery_expand = discovery_commands.add_parser(
+        "expand",
+        help="Amplía el catálogo de forma equilibrada hasta un objetivo global.",
+    )
+    discovery_expand.add_argument(
+        "--target-active",
+        type=_integer_between(1, 10_000),
+        default=_DEFAULT_CATALOG_TARGET,
+        metavar="N",
+        help=f"Objetivo global de productos activos (predeterminado: {_DEFAULT_CATALOG_TARGET}).",
+    )
+    discovery_expand.add_argument(
+        "--limit",
+        type=_integer_between(1, _MAX_CATALOG_EXPANSION_LIMIT),
+        default=_DEFAULT_CATALOG_EXPANSION_LIMIT,
+        metavar="N",
+        help="Máximo de candidatos a aprobar en esta operación.",
+    )
+    discovery_expand.add_argument(
+        "--apply",
+        action="store_true",
+        help="Aplica el plan; sin esta opción solo muestra la simulación.",
+    )
 
     product_parser = commands.add_parser(
         "product",
@@ -570,8 +597,12 @@ def _add_cycle_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--analysis-limit",
         type=_integer_between(1, _MAX_ANALYSIS_LIMIT),
-        default=_DEFAULT_ANALYSIS_LIMIT,
+        default=None,
         metavar="N",
+        help=(
+            "Máximo de observaciones por ciclo; por defecto usa "
+            "BOT_ANALYSIS_LIMIT o la política administrativa."
+        ),
     )
     parser.add_argument(
         "--notification-limit",
@@ -619,6 +650,11 @@ def _show_config() -> int:
         "- Historial: "
         f"{settings.detection_history_days} días; "
         f"máximo {settings.detection_history_limit} observaciones por oferta"
+    )
+    print(
+        "- Capacidad de análisis: "
+        f"{settings.analysis_limit} observaciones por ciclo; "
+        "las instantáneas recientes tienen prioridad"
     )
     print(
         "- Medianas: 7, 30 y 90 días; "
@@ -918,6 +954,200 @@ def _review_discovery_candidate(
         f"Candidato {candidate.id}: estado={candidate.status}, "
         f"producto={candidate.tracked_product_id or 'no creado'}."
     )
+    return 0
+
+
+def _round_robin_candidates(
+    candidates: Sequence[DiscoveryCandidate],
+    *,
+    limit: int,
+    active_products: Sequence[TrackedProduct] = (),
+    recent_alerts: Sequence[BalanceEntry] = (),
+) -> list[DiscoveryCandidate]:
+    """Select candidates by catalog and recent-publication underrepresentation."""
+
+    entries = [
+        BalanceEntry(
+                store_slug=candidate.store_slug,
+                category=catalog_category(
+                    store_slug=candidate.store_slug,
+                    label=getattr(candidate, "label", ""),
+            ),
+        )
+        for candidate in candidates
+    ]
+    initial_entries = [
+        BalanceEntry(
+                store_slug=product.store_slug,
+                category=catalog_category(
+                    store_slug=product.store_slug,
+                    label=getattr(product, "label", ""),
+            ),
+        )
+        for product in active_products
+    ]
+    initial_entries.extend(recent_alerts)
+    return [
+        candidates[position]
+        for position in balanced_indices(
+            entries,
+            limit=limit,
+            initial_entries=initial_entries,
+        )
+    ]
+
+
+def _expand_catalog(
+    *,
+    target_active: int,
+    limit: int,
+    apply: bool,
+) -> int:
+    registry = get_store_registry()
+    engine = _database_engine()
+    factory = create_session_factory(engine)
+    approved: list[DiscoveryCandidate] = []
+    duplicates = 0
+    blocked_stores: dict[str, str] = {}
+    plan: list[DiscoveryCandidate] = []
+    active_before = 0
+    try:
+        with session_scope(factory) as session:
+            repository = DiscoveryRepository(session)
+            repository.sync_registry(registry)
+            active_before = int(
+                session.scalar(
+                    select(func.count(TrackedProduct.id)).where(
+                        TrackedProduct.active.is_(True),
+                        TrackedProduct.archived_at.is_(None),
+                    )
+                )
+                or 0
+            )
+            active_products = list(
+                session.scalars(
+                    select(TrackedProduct).where(
+                        TrackedProduct.active.is_(True),
+                        TrackedProduct.archived_at.is_(None),
+                    )
+                )
+            )
+            recent_alerts = [
+                BalanceEntry(
+                    store_slug=observation.store_slug,
+                    category=catalog_category(
+                        store_slug=observation.store_slug,
+                        label=tracked_label or observation.title,
+                        category_path=observation.category_path,
+                    ),
+                )
+                for observation, tracked_label in session.execute(
+                    select(
+                        PriceObservationRecord,
+                        TrackedProduct.label,
+                    )
+                    .select_from(NotificationDelivery)
+                    .join(
+                        DealDetection,
+                        DealDetection.id == NotificationDelivery.detection_id,
+                    )
+                    .join(
+                        PriceObservationRecord,
+                        PriceObservationRecord.id == DealDetection.observation_id,
+                    )
+                    .outerjoin(
+                        TrackedProduct,
+                        TrackedProduct.id == DealDetection.tracked_product_id,
+                    )
+                    .where(
+                        NotificationDelivery.channel == "telegram_free",
+                        NotificationDelivery.status == "sent",
+                        NotificationDelivery.sent_at
+                        >= func.clock_timestamp() - timedelta(days=7),
+                    )
+                    .order_by(NotificationDelivery.sent_at.desc())
+                    .limit(2_000)
+                )
+            ]
+            needed = max(0, target_active - active_before)
+            if needed:
+                pending = list(
+                    session.scalars(
+                        select(DiscoveryCandidate)
+                        .where(
+                            DiscoveryCandidate.status
+                            == DiscoveryCandidateStatus.PENDING.value
+                        )
+                        .order_by(
+                            DiscoveryCandidate.last_seen_at.desc(),
+                            DiscoveryCandidate.id.desc(),
+                        )
+                        .limit(5_000)
+                    )
+                )
+                plan = _round_robin_candidates(
+                    pending,
+                    limit=min(limit, needed),
+                    active_products=active_products,
+                    recent_alerts=recent_alerts,
+                )
+            if apply:
+                for candidate in plan:
+                    if candidate.store_slug in blocked_stores:
+                        continue
+                    try:
+                        reviewed = repository.approve_candidate(
+                            candidate.id,
+                            reviewed_by="phase6.8-diversified-feed",
+                            registry=registry,
+                        )
+                    except DiscoveryReviewError as error:
+                        blocked_stores[candidate.store_slug] = str(error)
+                        continue
+                    if reviewed.status == DiscoveryCandidateStatus.APPROVED.value:
+                        approved.append(reviewed)
+                    else:
+                        duplicates += 1
+    finally:
+        engine.dispose()
+
+    needed = max(0, target_active - active_before)
+    print(
+        f"Catálogo activo: {active_before}; objetivo: {target_active}; "
+        f"faltantes: {needed}."
+    )
+    if not needed:
+        print("El catálogo ya alcanzó el objetivo.")
+        return 0
+    print(
+        f"Candidatos seleccionados de forma equilibrada: {len(plan)} "
+        f"(límite de esta operación: {limit})."
+    )
+    if not apply:
+        by_store: dict[str, int] = defaultdict(int)
+        by_category: dict[str, int] = defaultdict(int)
+        for candidate in plan:
+            by_store[candidate.store_slug] += 1
+            by_category[
+                catalog_category(
+                    store_slug=candidate.store_slug,
+                    label=candidate.label,
+                )
+            ] += 1
+        for store_slug, count in sorted(by_store.items()):
+            print(f"- {store_slug}: {count}")
+        print("Categorías comerciales del plan:")
+        for category, count in sorted(by_category.items()):
+            print(f"- {CATEGORY_LABELS[category]}: {count}")
+        print("Simulación terminada. Usa --apply para crear los productos.")
+        return 0
+
+    print(
+        f"Aprobados: {len(approved)}; duplicados detectados: {duplicates}; "
+        f"activo estimado: {active_before + len(approved)}."
+    )
+    for store_slug, reason in sorted(blocked_stores.items()):
+        print(f"- {store_slug}: expansión detenida de forma segura ({reason}).")
     return 0
 
 
@@ -1758,35 +1988,44 @@ def _analyze(limit: int) -> int:
 
 def _notify(limit: int) -> int:
     settings = _runtime_settings()
-    notifier = TelegramNotifier(
-        token=settings.telegram_token,
-        chat_id=settings.telegram_chat_id,
-        enabled=settings.telegram_enabled,
-    )
     engine = _database_engine()
     factory = create_session_factory(engine)
+    summaries: list[tuple[str, NotificationBatchSummary]] = []
     try:
-        summary = NotificationDispatcher(
-            factory,
-            settings,
-            notifier,
-        ).dispatch_due(limit=limit)
+        for destination in settings.telegram_offer_destinations():
+            notifier = TelegramNotifier(
+                token=settings.telegram_token,
+                chat_id=destination.chat_id,
+                channel_name=destination.channel,
+                enabled=settings.telegram_enabled,
+            )
+            summary = NotificationDispatcher(
+                factory,
+                settings,
+                notifier,
+            ).dispatch_due(limit=limit)
+            summaries.append((destination.audience, summary))
     finally:
         engine.dispose()
 
-    if not summary.configured:
+    if not any(summary.configured for _audience, summary in summaries):
         print(
             "Telegram no está configurado. Las alertas permanecen pendientes; "
-            "define TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID en .env."
+            "define TELEGRAM_BOT_TOKEN y TELEGRAM_FREE_CHAT_ID en .env "
+            "(TELEGRAM_CHAT_ID sigue siendo compatible)."
         )
         return 0
-    print(
-        "Notificaciones terminadas: "
-        f"reclamadas={summary.claimed}, enviadas={summary.sent}, "
-        f"reintentables={summary.retrying}, fallidas={summary.failed}, "
-        f"liberadas={summary.released}."
-    )
-    return 0 if summary.failed == 0 else 1
+    for audience, summary in summaries:
+        if not summary.configured:
+            print(f"Telegram {audience}: destino no configurado.")
+            continue
+        print(
+            f"Telegram {audience}: "
+            f"reclamadas={summary.claimed}, enviadas={summary.sent}, "
+            f"reintentables={summary.retrying}, fallidas={summary.failed}, "
+            f"liberadas={summary.released}."
+        )
+    return 0 if all(summary.failed == 0 for _audience, summary in summaries) else 1
 
 
 def _list_alerts(limit: int, *, include_all: bool = False) -> int:
@@ -1920,6 +2159,10 @@ def _list_confirmations(limit: int) -> int:
 
 
 def _cycle(args: argparse.Namespace) -> int:
+    analysis_limit = args.analysis_limit
+    if analysis_limit is None:
+        analysis_limit = _runtime_settings().analysis_limit
+
     print("=== Descubrimiento ===")
     discovery_status = _isolated_cycle_stage(
         "descubrimiento",
@@ -1955,7 +2198,7 @@ def _cycle(args: argparse.Namespace) -> int:
     print("=== Detección ===")
     analysis_status = _isolated_cycle_stage(
         "detección",
-        lambda: _analyze(args.analysis_limit),
+        lambda: _analyze(analysis_limit),
     )
     print()
     print("=== Alertas ===")
@@ -1998,6 +2241,7 @@ def _run_monitor(args: argparse.Namespace) -> int:
 
         settings = _runtime_settings()
         poll_seconds = args.poll_seconds or settings.scheduler_poll_seconds
+        analysis_limit = args.analysis_limit or settings.analysis_limit
         command_line = [
             sys.executable,
             "-m",
@@ -2006,7 +2250,7 @@ def _run_monitor(args: argparse.Namespace) -> int:
             "--crawl-limit",
             str(args.crawl_limit),
             "--analysis-limit",
-            str(args.analysis_limit),
+            str(analysis_limit),
             "--notification-limit",
             str(args.notification_limit),
         ]
@@ -2098,7 +2342,8 @@ def _run_watchdog(args: argparse.Namespace) -> int:
     )
     notifier = TelegramNotifier(
         token=settings.telegram_token,
-        chat_id=settings.telegram_admin_chat_id,
+        chat_id=settings.effective_telegram_operations_chat_id,
+        channel_name="telegram_operations",
         enabled=settings.telegram_enabled,
     )
     engine = create_database_engine(DatabaseSettings.from_env())
@@ -2177,6 +2422,12 @@ def _dispatch(args: argparse.Namespace) -> int:
             args.candidate_id,
             approve=False,
             reason=args.reason,
+        )
+    if args.command == "discovery" and args.discovery_command == "expand":
+        return _expand_catalog(
+            target_active=args.target_active,
+            limit=args.limit,
+            apply=args.apply,
         )
     if args.command == "product" and args.product_command == "add":
         return _add_product(args)

@@ -557,10 +557,11 @@ export class ApiClient {
   }
 
   async testTelegramDistribution(
+    destination: "telegram_free" | "telegram_vip" = "telegram_free",
     signal?: AbortSignal,
   ): Promise<ApiResponse<TelegramTestRead>> {
     return this.request<TelegramTestRead>(
-      "/api/v1/distribution/telegram/test",
+      appendQuery("/api/v1/distribution/telegram/test", { destination }),
       { method: "POST", signal },
     );
   }

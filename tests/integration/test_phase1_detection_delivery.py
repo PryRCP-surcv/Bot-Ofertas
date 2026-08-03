@@ -64,6 +64,7 @@ def _observation(
         title="Laptop Acme Pro 14 Modelo X14",
         brand="Acme",
         model="X14",
+        image_url="https://cdn.coolbox.pe/laptop-acme-x14.jpg",
         category_path=["Tecnología", "Computación"],
         variant=variant or {"Memoria": "16 GB", "Color": "Negro"},
         condition=ProductCondition.NEW,
@@ -191,7 +192,7 @@ def test_detection_dedupe_and_retryable_telegram_delivery_are_transactional() ->
         claim_time = datetime.now(UTC) + timedelta(minutes=1)
         delivery_repository = NotificationDeliveryRepository(session)
         first_claims = delivery_repository.claim_due(
-            channel="telegram",
+            channel="telegram_free",
             limit=100,
             max_attempts=3,
             lease_duration=timedelta(seconds=120),
@@ -202,6 +203,7 @@ def test_detection_dedupe_and_retryable_telegram_delivery_are_transactional() ->
         )
         assert first_claim.detection_id == first_detection.id
         assert first_claim.product_name == "Laptop Acme Pro 14"
+        assert first_claim.image_url == "https://cdn.coolbox.pe/laptop-acme-x14.jpg"
 
         assert delivery_repository.complete(
             delivery_id=first_claim.delivery_id,
@@ -221,13 +223,13 @@ def test_detection_dedupe_and_retryable_telegram_delivery_are_transactional() ->
         assert first_detection.notification_status == "retrying"
 
         not_due_claims = delivery_repository.claim_due(
-            channel="telegram",
+            channel="telegram_free",
             max_attempts=3,
             now=claim_time + timedelta(seconds=29),
         )
         assert all(claim.detection_id != first_detection.id for claim in not_due_claims)
         retry_claims = delivery_repository.claim_due(
-            channel="telegram",
+            channel="telegram_free",
             max_attempts=3,
             now=claim_time + timedelta(seconds=30),
         )
@@ -333,7 +335,7 @@ def test_unchanged_offer_is_suppressed_until_a_new_episode() -> None:
         state = session.scalar(
             select(OfferAlertState).where(
                 OfferAlertState.offer_key == first.offer_key,
-                OfferAlertState.channel == "telegram",
+                OfferAlertState.channel == "telegram_free",
             )
         )
         assert state is not None
@@ -389,6 +391,70 @@ def test_unchanged_offer_is_suppressed_until_a_new_episode() -> None:
             .where(DealDetection.tracked_product_id == product.id)
         )
         assert delivery_count == 2
+    finally:
+        session.close()
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
+
+
+def test_notification_queue_claims_higher_severity_first_without_dropping_others() -> None:
+    engine = create_database_engine(DatabaseSettings.from_env())
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, expire_on_commit=False)
+    suffix = uuid4().hex
+    observed_at = datetime.now(UTC) - timedelta(minutes=5)
+    settings = RuntimeSettings(
+        detector_version="phase6.3-priority-v1",
+        confirmation_required=False,
+        minimum_alert_confidence=0,
+        detector_config=DetectorConfig(minimum_history_samples=3),
+    )
+
+    try:
+        observations = PriceObservationRepository(session)
+        for position, (label, price) in enumerate(
+            (("buena", "80.00"), ("excepcional", "50.00"))
+        ):
+            source_url = f"https://www.coolbox.pe/priority-{label}-{suffix}/p"
+            product = TrackedProductRepository(session).add(
+                store_slug="coolbox",
+                source_url=source_url,
+                label=f"Oferta {label}",
+                expected_brand="Acme",
+                expected_model="X14",
+                expected_variant={"Memoria": "16 GB", "Color": "Negro"},
+            )
+            run = CrawlRunRepository(session).start(
+                store_slug="coolbox",
+                spider_name="phase63_priority",
+                requested_url_count=1,
+                started_at=observed_at + timedelta(seconds=position),
+            )
+            observations.save(
+                run_id=run.id,
+                observation=_observation(
+                    tracked_product_id=product.id,
+                    source_url=source_url,
+                    observed_at=observed_at + timedelta(seconds=position),
+                    price=price,
+                    payload_marker=f"{suffix}-{label}",
+                ),
+            )
+
+        summary = DetectionService(session, settings).process_new(limit=10)
+        claims = NotificationDeliveryRepository(session).claim_due(
+            channel="telegram_free",
+            limit=2,
+            now=datetime.now(UTC) + timedelta(minutes=1),
+        )
+
+        assert summary.notifications_reserved == 2
+        assert [claim.classification for claim in claims] == [
+            "exceptional_deal",
+            "good_deal",
+        ]
     finally:
         session.close()
         transaction.rollback()
@@ -468,6 +534,71 @@ def test_backfill_persists_old_decisions_but_only_latest_snapshot_can_alert() ->
             )
             == 0
         )
+    finally:
+        session.close()
+        transaction.rollback()
+        connection.close()
+        engine.dispose()
+
+
+def test_fresh_snapshot_is_analyzed_before_historical_backlog() -> None:
+    engine = create_database_engine(DatabaseSettings.from_env())
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = Session(bind=connection, expire_on_commit=False)
+    suffix = uuid4().hex
+    settings = RuntimeSettings(
+        detector_version=f"fp-{suffix}",
+        confirmation_required=False,
+        minimum_alert_confidence=0,
+        detector_config=DetectorConfig(minimum_history_samples=1),
+    )
+
+    try:
+        source_url = f"https://www.coolbox.pe/fresh-priority-{suffix}/p"
+        product = TrackedProductRepository(session).add(
+            store_slug="coolbox",
+            source_url=source_url,
+            label="Producto con cola histórica",
+            expected_brand="Acme",
+            expected_model="X14",
+            expected_variant={"Memoria": "16 GB", "Color": "Negro"},
+        )
+        observations = PriceObservationRepository(session)
+        saved_ids: list[int] = []
+        for position, price in enumerate(("40.00", "100.00")):
+            observed_at = datetime(2030, 1, 1, position, tzinfo=UTC)
+            run = CrawlRunRepository(session).start(
+                store_slug="coolbox",
+                spider_name="fresh_priority_integration",
+                requested_url_count=1,
+                started_at=observed_at,
+            )
+            saved = observations.save(
+                run_id=run.id,
+                observation=_observation(
+                    tracked_product_id=product.id,
+                    source_url=source_url,
+                    observed_at=observed_at,
+                    price=price,
+                    payload_marker=f"{suffix}-{position}",
+                ),
+            )
+            saved_ids.append(saved.observation_id)
+
+        summary = DetectionService(session, settings).process_new(limit=1)
+        detected_ids = set(
+            session.scalars(
+                select(DealDetection.observation_id).where(
+                    DealDetection.observation_id.in_(saved_ids),
+                    DealDetection.detector_version
+                    == settings.detector_version,
+                )
+            )
+        )
+
+        assert summary.processed == 1
+        assert detected_ids == {saved_ids[1]}
     finally:
         session.close()
         transaction.rollback()
@@ -764,6 +895,7 @@ def test_dispatcher_wires_a_leased_delivery_to_a_configured_channel() -> None:
                 channel=channel_name,
                 status=NotificationStatus.SENT,
                 message_id="fake-dispatcher-message",
+                delivery_method="photo_upload",
             )
 
     try:
@@ -827,9 +959,11 @@ def test_dispatcher_wires_a_leased_delivery_to_a_configured_channel() -> None:
         assert summary.sent == 1
         assert len(sent_notifications) == 1
         assert sent_notifications[0].product_name == "Producto enviado por dispatcher"
+        assert sent_notifications[0].image_url == "https://cdn.coolbox.pe/laptop-acme-x14.jpg"
         assert "Referencia interna" in sent_notifications[0].reason
         assert delivery.status == "sent"
         assert delivery.provider_message_id == "fake-dispatcher-message"
+        assert delivery.delivery_method == "photo_upload"
     finally:
         session.close()
         transaction.rollback()

@@ -5,6 +5,7 @@ from bot_ofertas.domain.observations import (
     InstallmentOption,
     PriceObservation,
     ProductCondition,
+    normalize_optional_https_url,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "InstallmentOption",
     "PriceObservation",
     "ProductCondition",
+    "normalize_optional_https_url",
 ]

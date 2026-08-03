@@ -68,25 +68,65 @@ def test_claim_batches_enforce_phase2_store_caps_and_intervals(monkeypatch) -> N
             )
 
     assert claimed_per_store == {
-        "cassinelli": 3,
-        "coolbox": 3,
+        "casaideas": 2,
+        "cassinelli": 2,
+        "coolbox": 2,
         "curacao": 2,
-        "efe": 2,
-        "oechsle": 2,
-        "plazavea": 2,
-        "promart": 2,
-        "topitop": 2,
-        "vega": 2,
+        "efe": 1,
+        "estilos": 1,
+        "falabella": 1,
+        "footloose": 1,
+        "metro": 1,
+        "oechsle": 1,
+        "plazavea": 1,
+        "promart": 1,
+        "topitop": 1,
+        "tottus": 1,
+        "vega": 1,
+        "wong": 1,
     }
     assert calls == [
-        ("cassinelli", 3, 60),
-        ("coolbox", 3, 30),
+        ("casaideas", 2, 60),
+        ("cassinelli", 2, 60),
+        ("coolbox", 2, 30),
         ("curacao", 2, 60),
-        ("efe", 2, 60),
-        ("oechsle", 2, 60),
-        ("plazavea", 2, 60),
-        ("promart", 2, 60),
-        ("topitop", 2, 60),
-        ("vega", 2, 60),
+        ("efe", 1, 60),
+        ("estilos", 1, 60),
+        ("falabella", 1, 60),
+        ("footloose", 1, 60),
+        ("metro", 1, 60),
+        ("oechsle", 1, 60),
+        ("plazavea", 1, 60),
+        ("promart", 1, 60),
+        ("topitop", 1, 60),
+        ("tottus", 1, 60),
+        ("vega", 1, 60),
+        ("wong", 1, 60),
     ]
     assert engine.disposed is True
+
+
+def test_catalog_expansion_rotates_across_stores_without_starvation() -> None:
+    candidates = [
+        SimpleNamespace(store_slug=store_slug, marker=marker)
+        for marker, store_slug in enumerate(
+            (
+                "coolbox",
+                "coolbox",
+                "coolbox",
+                "efe",
+                "efe",
+                "promart",
+            )
+        )
+    ]
+
+    selected = cli._round_robin_candidates(candidates, limit=5)  # noqa: SLF001
+
+    assert [(item.store_slug, item.marker) for item in selected] == [
+        ("coolbox", 0),
+        ("efe", 3),
+        ("promart", 5),
+        ("coolbox", 1),
+        ("efe", 4),
+    ]

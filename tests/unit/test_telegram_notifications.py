@@ -5,11 +5,15 @@ from typing import Any
 import pytest
 
 from bot_ofertas.notifications import (
+    DownloadedImage,
     NotificationChannel,
     NotificationStatus,
     OfferNotification,
+    RemoteImageError,
     TelegramNotifier,
     TelegramTransportError,
+    UrllibTelegramTransport,
+    render_telegram_caption,
     render_telegram_message,
 )
 
@@ -34,6 +38,7 @@ class RecordingTransport:
     def __init__(self, response: Mapping[str, Any] | None = None) -> None:
         self.response = response or {"ok": True, "result": {"message_id": 42}}
         self.calls: list[tuple[str, Mapping[str, object], float]] = []
+        self.multipart_calls: list[dict[str, object]] = []
 
     def post_json(
         self,
@@ -45,6 +50,148 @@ class RecordingTransport:
         self.calls.append((url, payload, timeout))
         return self.response
 
+    def post_multipart(
+        self,
+        *,
+        url: str,
+        fields: Mapping[str, object],
+        file_field: str,
+        filename: str,
+        content_type: str,
+        content: bytes,
+        timeout: float,
+    ) -> Mapping[str, Any]:
+        self.multipart_calls.append(
+            {
+                "url": url,
+                "fields": fields,
+                "file_field": file_field,
+                "filename": filename,
+                "content_type": content_type,
+                "content": content,
+                "timeout": timeout,
+            }
+        )
+        return self.response
+
+
+class SequenceTransport:
+    def __init__(self, responses: list[Mapping[str, Any]]) -> None:
+        self.responses = list(responses)
+        self.calls: list[tuple[str, Mapping[str, object], float]] = []
+        self.multipart_calls: list[dict[str, object]] = []
+        self.events: list[str] = []
+
+    def post_json(
+        self,
+        *,
+        url: str,
+        payload: Mapping[str, object],
+        timeout: float,
+    ) -> Mapping[str, Any]:
+        self.calls.append((url, payload, timeout))
+        self.events.append(url.rsplit("/", 1)[-1])
+        return self.responses.pop(0)
+
+    def post_multipart(
+        self,
+        *,
+        url: str,
+        fields: Mapping[str, object],
+        file_field: str,
+        filename: str,
+        content_type: str,
+        content: bytes,
+        timeout: float,
+    ) -> Mapping[str, Any]:
+        self.multipart_calls.append(
+            {
+                "url": url,
+                "fields": fields,
+                "file_field": file_field,
+                "filename": filename,
+                "content_type": content_type,
+                "content": content,
+                "timeout": timeout,
+            }
+        )
+        self.events.append(f"{url.rsplit('/', 1)[-1]}:multipart")
+        return self.responses.pop(0)
+
+
+class RecordingImageFetcher:
+    def __init__(
+        self,
+        result: DownloadedImage | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.result = result or DownloadedImage(
+            content=b"\xff\xd8\xffvalidated-jpeg",
+            content_type="image/jpeg",
+            filename="offer.jpg",
+        )
+        self.error = error
+        self.calls: list[tuple[str, float]] = []
+
+    def fetch(self, url: str, *, timeout: float) -> DownloadedImage:
+        self.calls.append((url, timeout))
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+class FakeTelegramResponse:
+    def __enter__(self) -> "FakeTelegramResponse":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return b'{"ok":true,"result":{"message_id":88}}'
+
+
+def test_urllib_transport_encodes_an_in_memory_photo_as_multipart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(request: object, *, timeout: float) -> FakeTelegramResponse:
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return FakeTelegramResponse()
+
+    monkeypatch.setattr(
+        "bot_ofertas.notifications.telegram.urlopen",
+        fake_urlopen,
+    )
+    response = UrllibTelegramTransport().post_multipart(
+        url="https://api.telegram.org/bot123:test/sendPhoto",
+        fields={
+            "chat_id": "-100123",
+            "caption": "Oferta Perú",
+            "reply_markup": {"inline_keyboard": []},
+        },
+        file_field="photo",
+        filename="offer.webp",
+        content_type="image/webp",
+        content=b"RIFF1234WEBPcontent",
+        timeout=6.0,
+    )
+
+    request = captured["request"]
+    body = request.data  # type: ignore[attr-defined]
+    content_type = request.headers["Content-type"]  # type: ignore[attr-defined]
+    assert response["ok"] is True
+    assert captured["timeout"] == 6.0
+    assert content_type.startswith("multipart/form-data; boundary=botofertas-")
+    assert b'name="chat_id"\r\n\r\n-100123' in body
+    assert "Oferta Perú".encode() in body
+    assert b'name="reply_markup"' in body
+    assert b'filename="offer.webp"' in body
+    assert b"Content-Type: image/webp" in body
+    assert b"RIFF1234WEBPcontent" in body
+
 
 def test_offer_notification_normalizes_values_and_rejects_float_money() -> None:
     notification = make_notification()
@@ -55,6 +202,19 @@ def test_offer_notification_normalizes_values_and_rejects_float_money() -> None:
 
     with pytest.raises(TypeError, match="floats are not accepted"):
         make_notification(current_price=179.0)
+
+
+@pytest.mark.parametrize(
+    "image_url",
+    [
+        "http://cdn.example.pe/producto.jpg",
+        "https://user:secret@cdn.example.pe/producto.jpg",
+        "https://cdn.example.pe:8443/producto.jpg",
+    ],
+)
+def test_offer_notification_rejects_unsafe_image_urls(image_url: str) -> None:
+    with pytest.raises(ValueError, match="image_url"):
+        make_notification(image_url=image_url)
 
 
 def test_offer_notification_normalizes_and_deduplicates_conditions() -> None:
@@ -109,13 +269,13 @@ def test_rendered_message_explains_offer_and_escapes_dynamic_html() -> None:
     message = render_telegram_message(make_notification())
 
     assert "🚨 Posible error de precio" in message
-    assert "Audífonos &lt;Pro&gt; &amp; &quot;Case&quot;" in message
-    assert "S/ 179.00" in message
-    assert "S/ 499.00 → S/ 179.00 (64.13% menos)" in message
-    assert "mínimo histórico" in message
+    assert "<b>Audífonos &lt;Pro&gt; &amp; &quot;Case&quot;</b>" in message
+    assert "💰 <b>Precio:</b> S/ 179.00" in message
+    assert "<s>S/ 499.00</s> · <b>64.13% de descuento</b>" in message
+    assert "mínimo histórico" not in message
     assert "Coolbox &amp; Perú" in message
     assert 'href="https://www.coolbox.pe/producto?a=1&amp;b=2"' in message
-    assert "<b>Condiciones:</b>" not in message
+    assert "Razón:" not in message
     assert len(message) <= 4096
 
 
@@ -129,22 +289,93 @@ def test_rendered_message_shows_conditions_and_escapes_their_html() -> None:
         )
     )
 
-    assert (
-        "<b>Condiciones:</b> precio con tarjeta &lt;Oh!&gt;; "
-        "requiere cupón &quot;VERANO&quot; &amp; membresía"
-    ) in message
+    assert "⚠️ precio con tarjeta &lt;Oh!&gt;" in message
+    assert "⚠️ requiere cupón &quot;VERANO&quot; &amp; membresía" in message
 
 
-def test_rendered_message_includes_confidence_and_confirmation_evidence() -> None:
-    notification = make_notification(confidence_score=85, confirmation_count=3)
+def test_public_message_hides_audit_metadata_but_keeps_verified_badge() -> None:
+    notification = make_notification(
+        confidence_score=85,
+        confirmation_count=3,
+        reason="descuento confirmado. Referencia interna #20",
+    )
 
     assert notification.confidence_score == 85
     assert notification.confirmation_count == 3
+    assert "Referencia interna #20" in notification.reason
 
     message = render_telegram_message(notification)
+    caption = render_telegram_caption(notification)
 
-    assert "<b>Confianza:</b> 85/100" in message
-    assert "<b>Confirmaciones:</b> 3 observaciones" in message
+    for public_text in (message, caption):
+        assert "Confianza:" not in public_text
+        assert "Confirmaciones:" not in public_text
+        assert "Razón:" not in public_text
+        assert "Referencia interna" not in public_text
+        assert "✅ Precio verificado" in public_text
+
+
+def test_public_message_cleans_store_prefix_internal_code_and_product_casing() -> None:
+    message = render_telegram_message(
+        make_notification(
+            product_name="topitop cafarena mujer sole color vino grape 1739109",
+            store_name="topitop",
+        )
+    )
+
+    assert "<b>Cafarena Mujer Sole Color Vino Grape</b>" in message
+    assert "<b>Topitop cafarena" not in message
+    assert "1739109" not in message
+
+    model_message = render_telegram_message(
+        make_notification(
+            product_name="estilos thomas batidoras th 350p pedestal14998",
+            store_name="estilos",
+        )
+    )
+
+    assert "<b>Thomas Batidoras TH 350P Pedestal</b>" in model_message
+    assert "14998" not in model_message
+
+
+def test_public_message_formats_variant_labels_without_equals() -> None:
+    message = render_telegram_message(
+        make_notification(
+            variant_summary=(
+                "Disponibles: Color=cobre, Talla=35; "
+                "Color=blanco, Talla=36"
+            ),
+        )
+    )
+
+    assert "🔹 <b>Variantes disponibles:</b>" in message
+    assert "<b>Color:</b> Cobre" in message
+    assert "<b>Talla:</b> 35" in message
+    assert "Color=" not in message
+    assert "Talla=" not in message
+
+
+@pytest.mark.parametrize(
+    ("discount_percent", "expected_heading"),
+    [
+        (Decimal("35"), "🔥 Oferta imperdible"),
+        (Decimal("49.99"), "🔥 Oferta imperdible"),
+        (Decimal("50"), "💥 Oferta excepcional"),
+        (Decimal("69.99"), "💥 Oferta excepcional"),
+    ],
+)
+def test_exceptional_heading_reflects_commercial_discount_tier(
+    discount_percent: Decimal,
+    expected_heading: str,
+) -> None:
+    message = render_telegram_message(
+        make_notification(
+            classification="exceptional_deal",
+            discount_percent=discount_percent,
+        )
+    )
+
+    assert expected_heading in message
 
 
 def test_send_uses_official_https_endpoint_and_expected_payload() -> None:
@@ -160,6 +391,7 @@ def test_send_uses_official_https_endpoint_and_expected_payload() -> None:
 
     assert isinstance(notifier, NotificationChannel)
     assert result.status is NotificationStatus.SENT
+    assert result.delivery_method == "text"
     assert result.sent is True
     assert result.message_id == "42"
     assert transport.calls == [
@@ -174,6 +406,217 @@ def test_send_uses_official_https_endpoint_and_expected_payload() -> None:
             3.5,
         )
     ]
+
+
+def test_send_with_image_uses_photo_caption_and_product_button() -> None:
+    transport = RecordingTransport()
+    notifier = TelegramNotifier(
+        token="123:secret-token",
+        chat_id="-100123",
+        timeout_seconds=3.5,
+        transport=transport,
+    )
+    notification = make_notification(
+        image_url="https://cdn.coolbox.pe/productos/audifonos.jpg"
+    )
+
+    result = notifier.send(notification)
+
+    assert result.status is NotificationStatus.SENT
+    assert result.delivery_method == "photo_url"
+    assert transport.calls == [
+        (
+            "https://api.telegram.org/bot123:secret-token/sendPhoto",
+            {
+                "chat_id": "-100123",
+                "photo": "https://cdn.coolbox.pe/productos/audifonos.jpg",
+                "caption": render_telegram_caption(notification),
+                "parse_mode": "HTML",
+                "reply_markup": {
+                    "inline_keyboard": [
+                        [
+                            {
+                                "text": "Ver producto",
+                                "url": notification.product_url,
+                            }
+                        ]
+                    ]
+                },
+            },
+            3.5,
+        )
+    ]
+    assert len(render_telegram_caption(notification)) <= 1024
+
+
+def test_bad_remote_photo_is_downloaded_and_uploaded_from_memory() -> None:
+    transport = SequenceTransport(
+        [
+            {"ok": False, "error_code": 400},
+            {"ok": True, "result": {"message_id": 99}},
+        ]
+    )
+    image_fetcher = RecordingImageFetcher()
+    notifier = TelegramNotifier(
+        token="123:secret-token",
+        chat_id="-100123",
+        transport=transport,
+        image_fetcher=image_fetcher,
+    )
+    notification = make_notification(
+        image_url="https://cdn.coolbox.pe/productos/invalida.jpg"
+    )
+
+    result = notifier.send(notification)
+
+    assert result.status is NotificationStatus.SENT
+    assert result.message_id == "99"
+    assert result.delivery_method == "photo_upload"
+    assert transport.events == [
+        "sendPhoto",
+        "sendPhoto:multipart",
+    ]
+    assert image_fetcher.calls == [(notification.image_url, 10.0)]
+    assert transport.multipart_calls == [
+        {
+            "url": "https://api.telegram.org/bot123:secret-token/sendPhoto",
+            "fields": {
+                "chat_id": "-100123",
+                "caption": render_telegram_caption(notification),
+                "parse_mode": "HTML",
+                "reply_markup": {
+                    "inline_keyboard": [
+                        [
+                            {
+                                "text": "Ver producto",
+                                "url": notification.product_url,
+                            }
+                        ]
+                    ]
+                },
+            },
+            "file_field": "photo",
+            "filename": "offer.jpg",
+            "content_type": "image/jpeg",
+            "content": b"\xff\xd8\xffvalidated-jpeg",
+            "timeout": 10.0,
+        }
+    ]
+
+
+def test_bad_remote_and_uploaded_photo_fall_back_to_complete_text() -> None:
+    transport = SequenceTransport(
+        [
+            {"ok": False, "error_code": 400},
+            {"ok": False, "error_code": 400},
+            {"ok": True, "result": {"message_id": 100}},
+        ]
+    )
+    notifier = TelegramNotifier(
+        token="123:secret-token",
+        chat_id="-100123",
+        transport=transport,
+        image_fetcher=RecordingImageFetcher(),
+    )
+    notification = make_notification(
+        image_url="https://cdn.coolbox.pe/productos/invalida.jpg"
+    )
+
+    result = notifier.send(notification)
+
+    assert result.status is NotificationStatus.SENT
+    assert result.message_id == "100"
+    assert result.delivery_method == "text_fallback"
+    assert transport.events == [
+        "sendPhoto",
+        "sendPhoto:multipart",
+        "sendMessage",
+    ]
+    assert transport.calls[-1][1]["text"] == render_telegram_message(notification)
+
+
+def test_failed_image_download_falls_back_to_complete_text() -> None:
+    transport = SequenceTransport(
+        [
+            {"ok": False, "error_code": 400},
+            {"ok": True, "result": {"message_id": 101}},
+        ]
+    )
+    image_fetcher = RecordingImageFetcher(
+        error=RemoteImageError("remote_network_error")
+    )
+    notifier = TelegramNotifier(
+        token="123:secret-token",
+        chat_id="-100123",
+        transport=transport,
+        image_fetcher=image_fetcher,
+    )
+    notification = make_notification(
+        image_url="https://cdn.coolbox.pe/productos/invalida.jpg"
+    )
+
+    result = notifier.send(notification)
+
+    assert result.status is NotificationStatus.SENT
+    assert result.delivery_method == "text_fallback"
+    assert transport.events == ["sendPhoto", "sendMessage"]
+    assert transport.multipart_calls == []
+
+
+def test_photo_rate_limit_is_retried_later_without_a_duplicate_text_attempt() -> None:
+    transport = RecordingTransport(
+        {
+            "ok": False,
+            "error_code": 429,
+            "parameters": {"retry_after": 30},
+        }
+    )
+    image_fetcher = RecordingImageFetcher()
+    notifier = TelegramNotifier(
+        token="123:secret-token",
+        chat_id="-100123",
+        transport=transport,
+        image_fetcher=image_fetcher,
+    )
+
+    result = notifier.send(
+        make_notification(image_url="https://cdn.coolbox.pe/productos/audifonos.jpg")
+    )
+
+    assert result.status is NotificationStatus.FAILED
+    assert result.retryable is True
+    assert result.retry_after_seconds == 30
+    assert len(transport.calls) == 1
+    assert transport.calls[0][0].endswith("/sendPhoto")
+    assert image_fetcher.calls == []
+
+
+def test_uploaded_photo_rate_limit_is_retried_without_text_fallback() -> None:
+    transport = SequenceTransport(
+        [
+            {"ok": False, "error_code": 400},
+            {
+                "ok": False,
+                "error_code": 429,
+                "parameters": {"retry_after": 45},
+            },
+        ]
+    )
+    notifier = TelegramNotifier(
+        token="123:secret-token",
+        chat_id="-100123",
+        transport=transport,
+        image_fetcher=RecordingImageFetcher(),
+    )
+
+    result = notifier.send(
+        make_notification(image_url="https://cdn.example.pe/product.jpg")
+    )
+
+    assert result.status is NotificationStatus.FAILED
+    assert result.retryable is True
+    assert result.retry_after_seconds == 45
+    assert transport.events == ["sendPhoto", "sendPhoto:multipart"]
 
 
 def test_send_text_uses_plain_telegram_message_without_html_mode() -> None:

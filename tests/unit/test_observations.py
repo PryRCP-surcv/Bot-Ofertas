@@ -24,6 +24,7 @@ def make_observation(**overrides: object) -> PriceObservation:
         "title": "Producto de prueba",
         "brand": "Marca",
         "model": "Modelo",
+        "image_url": "https://cdn.coolbox.pe/productos/demo.jpg",
         "category_path": ["Tecnología", "Computación"],
         "variant": {"Color": "Negro"},
         "condition": ProductCondition.NEW,
@@ -59,6 +60,7 @@ def test_observation_normalizes_money_currency_time_and_flags() -> None:
     assert observation.currency == "PEN"
     assert observation.observed_at == datetime(2026, 7, 26, 15, 0, tzinfo=UTC)
     assert observation.quality_flags == ["flag-a"]
+    assert observation.image_url == "https://cdn.coolbox.pe/productos/demo.jpg"
     assert observation.installments == [
         InstallmentOption(
             count=4,
@@ -100,3 +102,17 @@ def test_observation_rejects_naive_timestamp() -> None:
 def test_observation_rejects_invalid_payload_hash() -> None:
     with pytest.raises(ValueError, match="SHA-256"):
         make_observation(source_payload_hash="not-a-hash")
+
+
+@pytest.mark.parametrize(
+    "image_url",
+    [
+        "http://cdn.coolbox.pe/producto.jpg",
+        "https://user:password@cdn.coolbox.pe/producto.jpg",
+        "https://cdn.coolbox.pe:8443/producto.jpg",
+        "https://cdn.coolbox.pe/producto con espacios.jpg",
+    ],
+)
+def test_observation_rejects_unsafe_product_image_urls(image_url: str) -> None:
+    with pytest.raises(ValueError, match="image_url"):
+        make_observation(image_url=image_url)
